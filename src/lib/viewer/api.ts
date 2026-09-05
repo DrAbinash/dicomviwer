@@ -5,9 +5,9 @@
  * tool group that live inside <Viewport>. A tiny singleton registry keeps
  * components decoupled without prop drilling.
  *
- * Phase 2 (layouts): the registry holds one stack viewport per grid tile,
- * keyed by tile index. Every action applies to the ACTIVE tile - clicking a
- * tile moves both the React state and the registry pointer.
+ * Actions apply to the ACTIVE tile; when the store's sync flag is set
+ * (RadiAnt "link" behaviour) scroll/cine/W-L/invert fan out to every tile
+ * that has a series loaded.
  */
 import type { Types } from "@cornerstonejs/core";
 import { ToolGroupManager } from "@cornerstonejs/tools";
@@ -24,6 +24,20 @@ interface ViewportEntry {
 const entries = new Map<number, ViewportEntry>();
 let toolGroup: ToolGroupType | null = null;
 let activeCell = 0;
+const invertedCells = new Set<number>();
+
+/** Set by <Viewport> so actions can read the sync toggle without prop drilling. */
+let syncPredicate: () => boolean = () => false;
+export function registerSyncPredicate(fn: () => boolean) {
+  syncPredicate = fn;
+}
+function syncOn(): boolean {
+  try {
+    return syncPredicate();
+  } catch {
+    return false;
+  }
+}
 
 export function registerViewport(cellIndex: number, vp: Types.IStackViewport | null, element?: HTMLElement) {
   if (!vp) {
@@ -57,49 +71,81 @@ export function getViewportEntries(): Array<{ cellIndex: number; vp: Types.IStac
   return [...entries.entries()].map(([cellIndex, e]) => ({ cellIndex, ...e }));
 }
 
+/** Cells that actually have an image stack loaded. */
+function loadedEntries() {
+  return getViewportEntries().filter(({ vp }) => {
+    try {
+      return (vp as StackViewport).getImageIds?.().length > 0;
+    } catch {
+      return false;
+    }
+  });
+}
+
 export interface WindowPreset {
   name: string;
   ww: number;
   wc: number;
 }
 
-/**
- * Window presets. RadiAnt-style CT defaults; radiologists can still drag W/L
- * freely afterwards. Data-driven so sites can append their own protocols.
- */
-export const WINDOW_PRESETS: WindowPreset[] = [
-  { name: "Lung", ww: 1600, wc: -600 },
-  { name: "Bone", ww: 2500, wc: 480 },
-  { name: "Brain", ww: 80, wc: 40 },
-  { name: "Abdomen", ww: 400, wc: 50 },
-  { name: "Mediastinum", ww: 350, wc: 50 },
-  { name: "Angio", ww: 600, wc: 300 },
-];
-
-function applyVoi(lower: number, upper: number) {
-  const vp = getViewport();
-  if (!vp) return;
+function applyVoiTo(vp: Types.IStackViewport, lower: number, upper: number) {
   vp.setProperties({ voiRange: { lower, upper } });
   vp.render();
 }
 
 export const viewerActions = {
   setPreset(p: WindowPreset) {
-    applyVoi(p.wc - p.ww / 2, p.wc + p.ww / 2);
+    const lower = p.wc - p.ww / 2;
+    const upper = p.wc + p.ww / 2;
+    if (syncOn()) {
+      for (const { vp } of loadedEntries()) applyVoiTo(vp, lower, upper);
+    } else {
+      const vp = getViewport();
+      if (vp) applyVoiTo(vp, lower, upper);
+    }
   },
   setWindowRange(ww: number, wc: number) {
-    applyVoi(wc - ww / 2, wc + ww / 2);
+    viewerActions.setPreset({ name: "", ww, wc });
   },
-  setInvert(invert: boolean) {
-    const vp = getViewport();
-    if (!vp) return;
-    vp.setProperties({ invert });
-    vp.render();
+  /** Persistent invert toggle (Horos-style), tracked per tile. */
+  toggleInvert(): boolean {
+    const now = !invertedCells.has(activeCell);
+    invertedCells.delete(activeCell);
+    if (now) invertedCells.add(activeCell);
+    const targets = syncOn() ? loadedEntries() : [{ cellIndex: activeCell, vp: getViewport()! }];
+    for (const { cellIndex, vp } of targets) {
+      if (!vp) continue;
+      const value = invertedCells.has(cellIndex) || (syncOn() && now);
+      if (syncOn()) {
+        if (now) invertedCells.add(cellIndex);
+        else invertedCells.delete(cellIndex);
+      }
+      vp.setProperties({ invert: value });
+      vp.render();
+    }
+    return now;
+  },
+  isInverted(cell = activeCell): boolean {
+    return invertedCells.has(cell);
+  },
+  clearInvertState() {
+    invertedCells.clear();
+  },
+  /** Smooth (linear) vs pixelated (nearest) interpolation. */
+  setInterpolation(smooth: boolean) {
+    for (const { vp } of getViewportEntries()) {
+      try {
+        // Cornerstone InterpolationType: 1 = LINEAR, 0 = NEAREST
+        vp.setProperties({ interpolationType: smooth ? 1 : 0 });
+        vp.render();
+      } catch {
+        /* older builds - ignore */
+      }
+    }
   },
   fit() {
     const vp = getViewport();
     if (!vp) return;
-    // v5: resetCamera restores the fit-to-canvas view
     vp.resetCamera();
     vp.render();
   },
@@ -110,10 +156,15 @@ export const viewerActions = {
     }
   },
   reset() {
-    const vp = getViewport();
-    if (!vp) return;
-    vp.resetCamera();
-    vp.render();
+    const targets = syncOn() ? loadedEntries() : [{ vp: getViewport()! }];
+    for (const { vp } of targets) {
+      if (!vp) continue;
+      vp.resetCamera();
+      vp.setProperties({ invert: false });
+      vp.render();
+    }
+    if (syncOn()) invertedCells.clear();
+    else invertedCells.delete(activeCell);
   },
   rotate(deltaDeg: number) {
     const vp = getViewport();
@@ -134,9 +185,61 @@ export const viewerActions = {
     }
     vp.render();
   },
+  /** Scroll the active tile (or every loaded tile when sync is on). */
   scroll(delta: number) {
-    const vp = getViewport();
+    const targets = syncOn() ? loadedEntries() : [{ vp: getViewport()! }];
+    for (const { vp } of targets) {
+      if (!vp) continue;
+      (vp as StackViewport).scroll(delta);
+      vp.render?.();
+    }
+  },
+  /** Jump to a specific slice index (0-based) on the active tile. */
+  scrollToIndex(index: number) {
+    const vp = getViewport() as StackViewport | null;
     if (!vp) return;
-    (vp as StackViewport).scroll(delta);
+    try {
+      const count = vp.getImageIds().length;
+      vp.setImageIdIndex(Math.max(0, Math.min(count - 1, Math.round(index))));
+    } catch {
+      /* ignore */
+    }
+  },
+  /** Current slice index (0-based) of the active tile, or 0. */
+  currentSliceIndex(): number {
+    const vp = getViewport() as StackViewport | null;
+    if (!vp) return 0;
+    return (
+      (vp as unknown as { getCurrentImageIdIndex?: () => number }).getCurrentImageIdIndex?.() ?? 0
+    );
+  },
+  /** Download the active tile's canvas as a PNG (Horos "Export image"). */
+  snapshot(): boolean {
+    const entry = getViewportEntries().find(({ cellIndex }) => cellIndex === activeCell);
+    if (!entry) return false;
+    const canvas = entry.element.querySelector("canvas");
+    if (!canvas) return false;
+    try {
+      const url = (canvas as HTMLCanvasElement).toDataURL("image/png");
+      const a = document.createElement("a");
+      a.href = url;
+      const vp = entry.vp as StackViewport;
+      let meta = "slice";
+      try {
+        meta = `slice${(vp as unknown as { getCurrentImageIdIndex?: () => number }).getCurrentImageIdIndex?.() ?? 0}`;
+      } catch {
+        /* keep default */
+      }
+      a.download = `dicomviewer_${new Date().toISOString().replace(/[:.]/g, "-")}_${meta}.png`;
+      a.click();
+      return true;
+    } catch {
+      return false;
+    }
   },
 };
+
+/** A newly loaded stack starts with a clean invert slate for that tile. */
+export function clearCellInvert(cellIndex: number) {
+  invertedCells.delete(cellIndex);
+}

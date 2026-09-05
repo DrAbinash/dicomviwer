@@ -1,15 +1,17 @@
 "use client";
 
 /**
- * Toolbar: tool selection, window presets, orientation & view actions,
- * layout picker (Phase 2) and cine controls (Phase 2).
- * Desktop: horizontal bar under the viewport. Mobile-friendly sizing.
+ * Toolbar: tool selection, window presets (server-backed, editable in
+ * Settings > Viewer), orientation & view actions, layout picker, cine
+ * controls and the Phase 2.5 toggles: sync, persistent invert, interpolation,
+ * overlays, annotations panel, PNG export, fullscreen, shortcuts help.
  *
- * Layouts and cine prefs are data-driven from lib/viewer/{layouts,store} -
- * adding a layout there is all it takes for it to appear here.
+ * Layouts/presets/shortcuts are all data-driven - adding an entry in
+ * lib/viewer/{layouts,preferences,shortcuts} makes it show up here.
  */
-import { useViewerStore, type ToolId } from "@/lib/viewer/store";
-import { viewerActions, WINDOW_PRESETS } from "@/lib/viewer/api";
+import { useEffect, useState } from "react";
+import { cellCount, useViewerStore, type ToolId } from "@/lib/viewer/store";
+import { viewerActions } from "@/lib/viewer/api";
 import { LAYOUTS } from "@/lib/viewer/layouts";
 import { cn } from "@/lib/utils";
 
@@ -20,7 +22,7 @@ const TOOLS: Array<{ id: ToolId; label: string; glyph: string; title: string }> 
   { id: "stackscroll", label: "Scroll", glyph: "≡", title: "Stack scroll (drag)" },
   { id: "length", label: "Length", glyph: "⟝", title: "Length measurement" },
   { id: "angle", label: "Angle", glyph: "∠", title: "Angle measurement" },
-  { id: "ellipse", label: "ROI", glyph: "◯", title: "Ellipse ROI" },
+  { id: "ellipse", label: "ROI", glyph: "◯", title: "Ellipse ROI (mean/σ/area)" },
   { id: "rectangle", label: "Rect", glyph: "▭", title: "Rectangle ROI" },
   { id: "arrow", label: "Arrow", glyph: "➤", title: "Arrow annotation" },
   { id: "probe", label: "Probe", glyph: "✛", title: "Pixel probe" },
@@ -56,6 +58,42 @@ export default function Toolbar() {
   const setCineFps = useViewerStore((s) => s.setCineFps);
   const cineDirection = useViewerStore((s) => s.cineDirection);
   const setCineDirection = useViewerStore((s) => s.setCineDirection);
+  const presets = useViewerStore((s) => s.presets);
+  const syncEnabled = useViewerStore((s) => s.syncEnabled);
+  const toggleSync = useViewerStore((s) => s.toggleSync);
+  const inverted = useViewerStore((s) => s.inverted);
+  const setInverted = useViewerStore((s) => s.setInverted);
+  const showOverlays = useViewerStore((s) => s.showOverlays);
+  const toggleOverlays = useViewerStore((s) => s.toggleOverlays);
+  const smoothInterpolation = useViewerStore((s) => s.smoothInterpolation);
+  const toggleInterpolation = useViewerStore((s) => s.toggleInterpolation);
+  const toggleAnnotations = useViewerStore((s) => s.toggleAnnotations);
+  const setHelpOpen = useViewerStore((s) => s.setHelpOpen);
+
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  useEffect(() => {
+    const onFs = () => setIsFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", onFs);
+    return () => document.removeEventListener("fullscreenchange", onFs);
+  }, []);
+
+  /** Distribute the active study's series across all tiles (Horos auto-fill). */
+  const fillTiles = () => {
+    const state = useViewerStore.getState();
+    const study =
+      state.studies.find((s) => s.studyUid === state.activeStudyUid) ?? state.studies[0];
+    if (!study || study.series.length === 0) return;
+    const n = cellCount(state.layoutId);
+    const ids = study.series.map((s) => s.seriesUid);
+    const cellSeries = Array.from(
+      { length: n },
+      (_, i) => ids[i % ids.length] ?? null
+    );
+    useViewerStore.setState({
+      cellSeries,
+      activeSeriesUid: cellSeries[state.activeCell] ?? ids[0],
+    });
+  };
 
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-zinc-800 bg-zinc-950/95 px-2 py-1.5 backdrop-blur">
@@ -81,9 +119,9 @@ export default function Toolbar() {
 
       <div className="hidden h-5 w-px bg-zinc-800 sm:block" />
 
-      {/* window presets */}
+      {/* window presets (server-configured) */}
       <div className="flex items-center gap-0.5 overflow-x-auto [scrollbar-width:none]">
-        {WINDOW_PRESETS.map((p) => (
+        {presets.map((p) => (
           <button
             key={p.name}
             disabled={!hasStudy}
@@ -102,7 +140,7 @@ export default function Toolbar() {
       <div className="flex items-center gap-0.5">
         <button
           disabled={!hasStudy}
-          title="Scroll previous"
+          title="Scroll previous (↑ / PgUp)"
           onClick={() => viewerActions.scroll(-1)}
           className={cn(btn, "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200")}
         >
@@ -110,7 +148,7 @@ export default function Toolbar() {
         </button>
         <button
           disabled={!hasStudy}
-          title="Scroll next"
+          title="Scroll next (↓ / PgDn)"
           onClick={() => viewerActions.scroll(1)}
           className={cn(btn, "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200")}
         >
@@ -118,7 +156,7 @@ export default function Toolbar() {
         </button>
         <button
           disabled={!hasStudy}
-          title="Rotate 90° CW"
+          title="Rotate 90° CW (r / Shift+R for CCW)"
           onClick={() => viewerActions.rotate(90)}
           className={cn(btn, "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200")}
         >
@@ -126,7 +164,7 @@ export default function Toolbar() {
         </button>
         <button
           disabled={!hasStudy}
-          title="Flip horizontal"
+          title="Flip horizontal (h)"
           onClick={() => viewerActions.flip("h")}
           className={cn(btn, "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200")}
         >
@@ -134,18 +172,41 @@ export default function Toolbar() {
         </button>
         <button
           disabled={!hasStudy}
-          title="Invert"
-          onClick={() => {
-            viewerActions.setInvert(true);
-            setTimeout(() => viewerActions.setInvert(false), 1200);
-          }}
+          title="Flip vertical (v)"
+          onClick={() => viewerActions.flip("v")}
           className={cn(btn, "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200")}
+        >
+          ⇅
+        </button>
+        <button
+          disabled={!hasStudy}
+          title="Toggle invert - persistent (i)"
+          onClick={() => setInverted(viewerActions.toggleInvert())}
+          className={cn(
+            btn,
+            inverted
+              ? "bg-teal-500/20 text-teal-300 ring-1 ring-teal-400/60"
+              : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+          )}
         >
           ◐ Inv
         </button>
         <button
           disabled={!hasStudy}
-          title="Fit to window (active tile)"
+          title={smoothInterpolation ? "Interpolation: smooth (click for pixelated)" : "Interpolation: pixelated (click for smooth)"}
+          onClick={toggleInterpolation}
+          className={cn(
+            btn,
+            !smoothInterpolation
+              ? "bg-teal-500/20 text-teal-300 ring-1 ring-teal-400/60"
+              : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+          )}
+        >
+          {smoothInterpolation ? "Smooth" : "Pixel"}
+        </button>
+        <button
+          disabled={!hasStudy}
+          title="Fit to window (active tile) (f)"
           onClick={() => viewerActions.fit()}
           className={cn(btn, "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200")}
         >
@@ -153,7 +214,7 @@ export default function Toolbar() {
         </button>
         <button
           disabled={!hasStudy}
-          title="Fit all tiles"
+          title="Fit all tiles (Shift+F)"
           onClick={() => viewerActions.fitAll()}
           className={cn(btn, "hidden text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 sm:inline-flex")}
         >
@@ -161,8 +222,11 @@ export default function Toolbar() {
         </button>
         <button
           disabled={!hasStudy}
-          title="Reset view"
-          onClick={() => viewerActions.reset()}
+          title="Reset view (camera + invert)"
+          onClick={() => {
+            viewerActions.reset();
+            setInverted(false);
+          }}
           className={cn(btn, "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200")}
         >
           Reset
@@ -175,7 +239,7 @@ export default function Toolbar() {
       <div className="flex items-center gap-0.5">
         <button
           disabled={!hasStudy}
-          title={cinePlaying ? "Pause cine loop" : "Play cine loop (active tile)"}
+          title={cinePlaying ? "Pause cine loop (Space)" : "Play cine loop (Space)"}
           onClick={toggleCine}
           className={cn(
             btn,
@@ -215,11 +279,24 @@ export default function Toolbar() {
             </select>
           </>
         )}
+        <button
+          title="Sync scroll + cine across all tiles (y)"
+          onClick={toggleSync}
+          className={cn(
+            btn,
+            syncEnabled
+              ? "bg-teal-500/20 text-teal-300 ring-1 ring-teal-400/60"
+              : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+          )}
+        >
+          <span className="hidden sm:inline">Sync</span>
+          <span className="sm:hidden">⛓</span>
+        </button>
       </div>
 
       <div className="hidden h-5 w-px bg-zinc-800 sm:block" />
 
-      {/* layouts (Horos-style grid) */}
+      {/* layouts + fill */}
       <div className="flex items-center gap-0.5" title="Viewport layout">
         {LAYOUTS.map((l) => (
           <button
@@ -237,6 +314,70 @@ export default function Toolbar() {
             <span className="hidden lg:inline">{l.label}</span>
           </button>
         ))}
+        <button
+          disabled={!hasStudy}
+          title="Fill all tiles with the active study's series"
+          onClick={fillTiles}
+          className={cn(btn, "ml-1 text-zinc-400 hover:bg-zinc-800 hover:text-teal-300")}
+        >
+          Fill
+        </button>
+      </div>
+
+      <div className="hidden h-5 w-px bg-zinc-800 sm:block" />
+
+      {/* misc actions */}
+      <div className="flex items-center gap-0.5">
+        <button
+          title="Show / hide text overlays (o)"
+          onClick={toggleOverlays}
+          className={cn(
+            btn,
+            showOverlays
+              ? "text-teal-300"
+              : "text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+          )}
+        >
+          <span className="hidden sm:inline">Info</span>
+          <span className="sm:hidden">ℹ</span>
+        </button>
+        <button
+          title="Measurements panel (a)"
+          onClick={toggleAnnotations}
+          className={cn(btn, "text-zinc-400 hover:bg-zinc-800 hover:text-teal-300")}
+        >
+          <span className="hidden sm:inline">Measure</span>
+          <span className="sm:hidden">📏</span>
+        </button>
+        <button
+          disabled={!hasStudy}
+          title="Export active tile as PNG (p)"
+          onClick={() => viewerActions.snapshot()}
+          className={cn(btn, "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200")}
+        >
+          <span className="hidden sm:inline">PNG</span>
+          <span className="sm:hidden">⬇</span>
+        </button>
+        <button
+          title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+          onClick={() => {
+            if (document.fullscreenElement) {
+              document.exitFullscreen().catch(() => {});
+            } else {
+              document.documentElement.requestFullscreen().catch(() => {});
+            }
+          }}
+          className={cn(btn, "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200")}
+        >
+          {isFullscreen ? "⤡" : "⛶"}
+        </button>
+        <button
+          title="Keyboard shortcuts (?)"
+          onClick={() => setHelpOpen(true)}
+          className={cn(btn, "text-zinc-400 hover:bg-zinc-800 hover:text-teal-300")}
+        >
+          ?
+        </button>
       </div>
     </div>
   );

@@ -2,6 +2,9 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  // pin the tracing root: the sandbox has multiple lockfiles, which makes
+  // Next infer the wrong workspace root and nest the standalone output
+  outputFileTracingRoot: __dirname,
   typescript: {
     ignoreBuildErrors: true,
   },
@@ -28,7 +31,11 @@ const nextConfig: NextConfig = {
     };
     return config;
   },
-  turbopack: {},
+  turbopack: {
+    // small NAS/CI containers OOM-kill the build without a cap (seen at ~2.3GB
+    // anon-rss on a 4GB box); GC harder and stay under the ceiling
+    memoryLimit: 2048,
+  },
 };
 
 export default nextConfig;

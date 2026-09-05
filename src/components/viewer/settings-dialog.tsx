@@ -42,6 +42,7 @@ import {
   type GatewayInfo,
   type PacsServerInfo,
 } from "@/lib/viewer/pacs";
+import ViewerTab from "./viewer-tab";
 
 interface Props {
   open: boolean;
@@ -283,12 +284,15 @@ export default function SettingsDialog({ open, onOpenChange }: Props) {
         </DialogHeader>
 
         <Tabs defaultValue="pacs" className="flex min-h-0 flex-1 flex-col gap-3">
-          <TabsList className="grid w-full grid-cols-4 bg-zinc-900">
+          <TabsList className="grid w-full grid-cols-5 bg-zinc-900">
             <TabsTrigger value="pacs" className="px-1 data-[state=active]:bg-zinc-800 data-[state=active]:text-teal-300">
               PACS
             </TabsTrigger>
             <TabsTrigger value="gateway" className="px-1 data-[state=active]:bg-zinc-800 data-[state=active]:text-teal-300">
               Gateway
+            </TabsTrigger>
+            <TabsTrigger value="viewer" className="px-1 data-[state=active]:bg-zinc-800 data-[state=active]:text-teal-300">
+              Viewer
             </TabsTrigger>
             <TabsTrigger value="autopull" className="px-1 data-[state=active]:bg-zinc-800 data-[state=active]:text-teal-300">
               Auto-Pull
@@ -594,7 +598,16 @@ export default function SettingsDialog({ open, onOpenChange }: Props) {
             </div>
           </TabsContent>
 
-          {/* -------------------------- Auto-Pull --------------------------- */}
+          {/* --------------------- viewer preferences ---------------------- */}
+          <TabsContent value="viewer" className="flex min-h-0 flex-col gap-3 data-[state=inactive]:hidden">
+            <p className="text-xs leading-5 text-zinc-500">
+              Window/level presets and viewer defaults shown here are stored on
+              the server - every browser and every device gets the same
+              configuration. Nothing in the viewer is hardcoded.
+            </p>
+            <ViewerTab />
+          </TabsContent>
+
           <TabsContent value="autopull" className="flex min-h-0 flex-col gap-3 data-[state=inactive]:hidden">
             {apLoading && <div className="text-xs text-zinc-500">Checking auto-puller…</div>}
 

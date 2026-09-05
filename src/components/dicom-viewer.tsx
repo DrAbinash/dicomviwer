@@ -11,6 +11,7 @@ import { useRouter } from "next/navigation";
 import { Settings as SettingsIcon, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useViewerStore } from "@/lib/viewer/store";
+import { handleShortcut } from "@/lib/viewer/shortcuts";
 import {
   parseDicomBuffer,
   groupIntoStudies,
@@ -31,6 +32,8 @@ const ThumbnailRail = dynamic(() => import("./viewer/thumbnail-rail"), { ssr: fa
 const Toolbar = dynamic(() => import("./viewer/toolbar"), { ssr: false });
 const PacsDialog = dynamic(() => import("./viewer/pacs-dialog"), { ssr: false });
 const SettingsDialog = dynamic(() => import("./viewer/settings-dialog"), { ssr: false });
+const ShortcutsDialog = dynamic(() => import("./viewer/shortcuts-dialog"), { ssr: false });
+const AnnotationsPanel = dynamic(() => import("./viewer/annotations-panel"), { ssr: false });
 
 const SAMPLE_COUNT = 30;
 
@@ -82,6 +85,29 @@ export default function DicomViewer() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // global keyboard shortcuts (data-driven map in lib/viewer/shortcuts.ts)
+  const helpOpen = useViewerStore((s) => s.helpOpen);
+  const setHelpOpen = useViewerStore((s) => s.setHelpOpen);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === "INPUT" ||
+          t.tagName === "TEXTAREA" ||
+          t.tagName === "SELECT" ||
+          t.isContentEditable)
+      ) {
+        return; // don't hijack typing
+      }
+      if (handleShortcut({ key: e.key, shift: e.shiftKey, alt: e.altKey, ctrl: e.ctrlKey })) {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const ingestFiles = useCallback(
     (files: File[]) => {
@@ -261,6 +287,7 @@ export default function DicomViewer() {
         {/* viewport */}
         <main className="relative min-w-0 flex-1">
           <Viewport />
+          <AnnotationsPanel />
 
           {/* empty state */}
           {studyCount === 0 && (
@@ -330,6 +357,7 @@ export default function DicomViewer() {
         }}
       />
       <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+      <ShortcutsDialog open={helpOpen} onOpenChange={setHelpOpen} />
     </div>
   );
 }

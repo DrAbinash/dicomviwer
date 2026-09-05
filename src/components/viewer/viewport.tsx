@@ -1,19 +1,21 @@
 "use client";
 
 /**
- * Cornerstone3D multi-viewport grid (Phase 2, RadiAnt/Horos-style layouts).
+ * Cornerstone3D multi-viewport grid (Phase 2/2.5, Horos/RadiAnt-style).
  *
  *  - One RenderingEngine hosts up to rows×cols STACK viewports ("tiles").
  *  - One ToolGroup is shared by every tile: tool bindings apply everywhere,
  *    mouse/touch actions act on the active tile (teal outline).
  *  - Tiles are assigned series from the store (cellSeries); tile 0 falls back
  *    to the globally active series. Clicking a thumbnail loads it into the
- *    active tile.
- *  - Cine: rAF loop stepping the active tile at a user-set fps with
- *    forward / backward / oscillate direction.
- *
- * Overlays per tile: patient info (TL), window + zoom (TR), series info (BL),
- * slice position (BR) - updated from cornerstone element events.
+ *    active tile; double-clicking a tile maximizes it (RadiAnt behaviour).
+ *  - Cine: rAF loop at a user-set fps with forward/backward/oscillate
+ *    direction; when sync is on every loaded tile plays in lockstep.
+ *  - Sync (RadiAnt "link"): scroll, cine and W/L presets fan out to all
+ *    loaded tiles.
+ *  - Overlays per tile: patient info (TL), orientation markers (edges),
+ *    window + zoom (TR), series info (BL), slice + scrubber (BR) - all
+ *    toggleable, none of the defaults are hardcoded (server preferences).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -46,13 +48,18 @@ import {
   type ToolId,
 } from "@/lib/viewer/store";
 import { getLayout } from "@/lib/viewer/layouts";
+import { getOrientationLabels } from "@/lib/viewer/orientation";
 import type { SeriesInfo, StudyInfo } from "@/lib/viewer/loader";
 import {
   registerViewport,
   registerToolGroup,
+  registerSyncPredicate,
   setActiveViewportCell,
   getActiveCell,
   getViewport,
+  getViewportEntries,
+  viewerActions,
+  clearCellInvert,
 } from "@/lib/viewer/api";
 import { ensureCornerstone } from "@/lib/viewer/init";
 
@@ -66,6 +73,8 @@ interface OverlayState {
   wc: number;
   zoom: number;
   slice: number;
+  top?: string;
+  left?: string;
 }
 
 interface CellMeta {
@@ -135,13 +144,20 @@ export default function Viewport() {
   const layoutId = useViewerStore((s) => s.layoutId);
   const cellSeries = useViewerStore((s) => s.cellSeries);
   const activeCell = useViewerStore((s) => s.activeCell);
+  const maximizedCell = useViewerStore((s) => s.maximizedCell);
+  const toggleMaximize = useViewerStore((s) => s.toggleMaximize);
   const cinePlaying = useViewerStore((s) => s.cinePlaying);
   const cineFps = useViewerStore((s) => s.cineFps);
   const cineDirection = useViewerStore((s) => s.cineDirection);
+  const syncEnabled = useViewerStore((s) => s.syncEnabled);
+  const showOverlays = useViewerStore((s) => s.showOverlays);
+  const smoothInterpolation = useViewerStore((s) => s.smoothInterpolation);
   const setActiveCellStore = useViewerStore((s) => s.setActiveCell);
-  const initCinePrefs = useViewerStore((s) => s.initCinePrefs);
+  const initViewerPrefs = useViewerStore((s) => s.initViewerPrefs);
 
   const layout = getLayout(layoutId);
+  // maximize renders a single-cell grid; the other tiles stay mounted but hidden
+  const effLayout = maximizedCell !== null ? getLayout("1x1") : layout;
   const nCells = layout.rows * layout.cols;
 
   const [ready, setReady] = useState(false);
@@ -149,8 +165,8 @@ export default function Viewport() {
   const [cellMeta, setCellMeta] = useState<Record<number, CellMeta>>({});
 
   useEffect(() => {
-    initCinePrefs();
-  }, [initCinePrefs]);
+    initViewerPrefs();
+  }, [initViewerPrefs]);
 
   /* ------------------------- per-cell overlay update ------------------- */
 
@@ -164,6 +180,7 @@ export default function Viewport() {
     const baseline = baselinesRef.current.get(cell);
     const zoom =
       baseline && cam.parallelScale ? Math.round((baseline / cam.parallelScale) * 100) : 100;
+    const orient = getOrientationLabels(vp as Types.IStackViewport);
     setOverlays((prev) => ({
       ...prev,
       [cell]: {
@@ -171,6 +188,8 @@ export default function Viewport() {
         wc: Math.round(((props.voiRange?.upper ?? 0) + (props.voiRange?.lower ?? 0)) / 2),
         zoom,
         slice: sliceIndex + 1,
+        top: orient?.top,
+        left: orient?.left,
       },
     }));
   }, []);
@@ -183,7 +202,10 @@ export default function Viewport() {
         const detail = (evt as CustomEvent<{ imageIdIndex: number }>).detail;
         setOverlays((prev) => ({
           ...prev,
-          [cell]: { ...(prev[cell] ?? { ww: 0, wc: 0, zoom: 100, slice: 1 }), slice: (detail?.imageIdIndex ?? 0) + 1 },
+          [cell]: {
+            ...(prev[cell] ?? { ww: 0, wc: 0, zoom: 100, slice: 1 }),
+            slice: (detail?.imageIdIndex ?? 0) + 1,
+          },
         }));
         updateOverlay(cell);
       };
@@ -230,6 +252,8 @@ export default function Viewport() {
         registerToolGroup(tg);
       }
 
+      registerSyncPredicate(() => useViewerStore.getState().syncEnabled);
+
       // debug handle (harmless in prod, used by e2e verification)
       (window as unknown as { __csEventTarget?: unknown }).__csEventTarget = eventTarget;
       Object.defineProperty(window, "__csViewport", {
@@ -244,7 +268,7 @@ export default function Viewport() {
     boot();
 
     // keep the canvases matched to the element sizes (resizes, orientation
-    // changes, sidebar toggle, layout changes)
+    // changes, sidebar toggle, layout changes, maximize restore)
     let rafId = 0;
     const ro = new ResizeObserver(() => {
       cancelAnimationFrame(rafId);
@@ -317,9 +341,6 @@ export default function Viewport() {
         listenersRef.current.delete(cell);
         loadedSeriesRef.current.delete(cell);
         cellMetaRef.current.delete(cell);
-        // NB: stale cellMeta/overlays keys for removed tiles are harmless -
-        // those tiles no longer render, and a re-enabled tile reloads its
-        // stack (loadedSeriesRef was cleared) which refreshes the meta.
       }
     }
   }, [ready, nCells, attachOverlayListeners]);
@@ -350,6 +371,7 @@ export default function Viewport() {
     let cancelled = false;
 
     async function loadAll() {
+      const smooth = useViewerStore.getState().smoothInterpolation;
       for (const r of resolved) {
         if (cancelled) return;
         if (!r.series || r.series.imageIds.length === 0) continue;
@@ -361,10 +383,15 @@ export default function Viewport() {
         if (!vp) continue;
 
         await vp.setStack(r.series.imageIds, 0);
+        clearCellInvert(r.cell);
         // apply the series' embedded default window (falls back to a CT default)
         const ww = r.series.defaultWindowWidth ?? 1600;
         const wc = r.series.defaultWindowCenter ?? 400;
-        vp.setProperties({ voiRange: { lower: wc - ww / 2, upper: wc + ww / 2 } });
+        vp.setProperties({
+          voiRange: { lower: wc - ww / 2, upper: wc + ww / 2 },
+          invert: false,
+          interpolationType: smooth ? 1 : 0,
+        });
         // record the fit baseline for the zoom % readout, then fit
         vp.resetCamera();
         baselinesRef.current.set(r.cell, vp.getCamera().parallelScale || 0);
@@ -445,6 +472,13 @@ export default function Viewport() {
     }
   }, [activeTool, ready, activeSeriesUid]);
 
+  /* --------------------------- interpolation ---------------------------- */
+
+  useEffect(() => {
+    if (!ready) return;
+    viewerActions.setInterpolation(smoothInterpolation);
+  }, [smoothInterpolation, ready]);
+
   /* -------------------------------- cine -------------------------------- */
 
   useEffect(() => {
@@ -457,6 +491,23 @@ export default function Viewport() {
       raf = requestAnimationFrame(step);
       if (t - last < 1000 / cineFps) return;
       last = t;
+
+      if (useViewerStore.getState().syncEnabled) {
+        // lockstep playback across every tile that has a stack
+        for (const { vp } of getViewportEntries()) {
+          const svp = vp as StackViewport;
+          const count = svp.getImageIds?.().length ?? 0;
+          if (count < 2) continue;
+          if (cineDirection === "oscillate") {
+            const idx =
+              (svp as unknown as { getCurrentImageIdIndex?: () => number }).getCurrentImageIdIndex?.() ?? 0;
+            const next = idx + dir;
+            if (next < 0 || next > count - 1) dir = -dir;
+          }
+          svp.scroll(dir);
+        }
+        return;
+      }
 
       const vp = getViewport() as StackViewport | null; // active tile
       if (!vp) return;
@@ -484,25 +535,33 @@ export default function Viewport() {
     setActiveViewportCell(i);
   };
 
+  // which tile is displayed when a cell is maximized (grid becomes 1x1)
+  const shownCell = maximizedCell !== null ? Math.min(maximizedCell, nCells - 1) : null;
+
+  const activeSlice = overlays[activeCell]?.slice ?? 1;
+
   return (
     <div className="h-full w-full bg-zinc-950">
       <div
         ref={gridRef}
         className="grid h-full w-full gap-px bg-zinc-900"
         style={{
-          gridTemplateColumns: `repeat(${layout.cols}, minmax(0, 1fr))`,
-          gridTemplateRows: `repeat(${layout.rows}, minmax(0, 1fr))`,
+          gridTemplateColumns: `repeat(${effLayout.cols}, minmax(0, 1fr))`,
+          gridTemplateRows: `repeat(${effLayout.rows}, minmax(0, 1fr))`,
         }}
       >
         {Array.from({ length: nCells }, (_, i) => {
           const meta = cellMeta[i];
           const ov = overlays[i];
+          const hidden = shownCell !== null && shownCell !== i;
           return (
             <div
               key={i}
               data-cell-index={i}
               className="relative min-h-0 min-w-0 overflow-hidden bg-black"
+              style={hidden ? { display: "none" } : undefined}
               onPointerDown={() => activateCell(i)}
+              onDoubleClick={() => toggleMaximize(i)}
             >
               <div
                 ref={(el) => {
@@ -513,7 +572,7 @@ export default function Viewport() {
                 onContextMenu={(e) => e.preventDefault()}
               />
 
-              {meta && (
+              {showOverlays && meta && (
                 <>
                   <div className="pointer-events-none absolute left-2 top-2 text-[11px] leading-4 text-teal-300/90 sm:text-xs sm:leading-5">
                     <div className="font-medium text-teal-200">{meta.patientLabel}</div>
@@ -528,16 +587,71 @@ export default function Viewport() {
                   <div className="pointer-events-none absolute bottom-2 left-2 text-[11px] leading-4 text-zinc-400 sm:text-xs sm:leading-5">
                     <div className="max-w-[60%] truncate">{meta.seriesLabel}</div>
                   </div>
-                  <div className="pointer-events-none absolute bottom-2 right-2 text-right text-[11px] leading-4 text-teal-300/90 sm:text-xs sm:leading-5">
-                    <div>
-                      Img {ov?.slice ?? 1} / {meta.imageCount}
-                    </div>
-                  </div>
                 </>
               )}
 
-              {i === activeCell && nCells > 1 && (
+              {/* orientation markers (R/L/A/P) - Horos-style, metadata-driven */}
+              {showOverlays && ov?.top && (
+                <div className="pointer-events-none absolute left-1/2 top-1 -translate-x-1/2 text-[11px] font-semibold text-teal-300/90">
+                  {ov.top}
+                </div>
+              )}
+              {showOverlays && ov?.left && (
+                <div className="pointer-events-none absolute left-1 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-teal-300/90">
+                  {ov.left}
+                </div>
+              )}
+
+              {/* slice counter + scrubber on the active tile (RadiAnt-style) */}
+              {showOverlays && meta && (
+                <div className="pointer-events-none absolute bottom-2 right-2 flex items-center gap-2 text-right text-[11px] leading-4 text-teal-300/90 sm:text-xs sm:leading-5">
+                  <div>Img {ov?.slice ?? 1} / {meta.imageCount}</div>
+                </div>
+              )}
+              {meta && i === activeCell && meta.imageCount > 1 && shownCell === null && (
+                <input
+                  type="range"
+                  min={0}
+                  max={meta.imageCount - 1}
+                  step={1}
+                  value={Math.max(0, activeSlice - 1)}
+                  onChange={(e) => viewerActions.scrollToIndex(Number(e.target.value))}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  title="Scrub slices"
+                  className="pointer-events-auto absolute bottom-2 left-1/2 h-1 w-[45%] -translate-x-1/2 accent-teal-500"
+                />
+              )}
+              {meta && i === activeCell && meta.imageCount > 1 && shownCell === i && (
+                <input
+                  type="range"
+                  min={0}
+                  max={meta.imageCount - 1}
+                  step={1}
+                  value={Math.max(0, activeSlice - 1)}
+                  onChange={(e) => viewerActions.scrollToIndex(Number(e.target.value))}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  title="Scrub slices"
+                  className="pointer-events-auto absolute bottom-2 left-1/2 h-1 w-[70%] -translate-x-1/2 accent-teal-500"
+                />
+              )}
+
+              {i === activeCell && nCells > 1 && !hidden && (
                 <div className="pointer-events-none absolute inset-0 ring-2 ring-inset ring-teal-400/70" />
+              )}
+
+              {/* maximize hint badge (desktop only) */}
+              {meta && nCells > 1 && !hidden && (
+                <button
+                  title={shownCell === i ? "Restore grid (double-click)" : "Maximize tile (double-click)"}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    activateCell(i);
+                    toggleMaximize(i);
+                  }}
+                  className="absolute right-1.5 top-1/2 hidden h-5 w-5 -translate-y-1/2 items-center justify-center rounded border border-zinc-700/70 bg-zinc-950/70 text-[10px] text-zinc-400 hover:text-teal-300 sm:flex"
+                >
+                  {shownCell === i ? "⤡" : "⤢"}
+                </button>
               )}
             </div>
           );

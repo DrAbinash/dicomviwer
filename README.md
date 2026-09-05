@@ -11,7 +11,7 @@ Windows (Tauri) and iOS (Capacitor) applications.
 > certified for diagnostic use. Always confirm findings on a certified
 > workstation.
 
-![Status](https://img.shields.io/badge/status-Phase%202-teal) ![Stack](https://img.shields.io/badge/stack-Next.js%2016%20%2B%20Cornerstone3D%205-black)
+![Status](https://img.shields.io/badge/status-Phase%202.5-teal) ![Stack](https://img.shields.io/badge/stack-Next.js%2016%20%2B%20Cornerstone3D%205-black)
 
 ## Features
 
@@ -64,6 +64,40 @@ Windows (Tauri) and iOS (Capacitor) applications.
 - **PACS query/retrieve** via DICOMweb (QIDO-RS + WADO-URI) through Orthanc
 - HTTPS-ready docker-compose stack: **viewer + Orthanc + auto-puller + Caddy**
 
+### Phase 2.5 — the full Horos-inspired feature pack
+
+Everything below is data-driven: **window presets, viewer defaults and all
+toggles live in server preferences or localStorage — no site values are
+hardcoded anywhere in the code.**
+
+- **Server-backed viewer preferences** (Settings → Viewer):
+  - window/level **presets are editable** (add/rename/reorder/delete, set
+    WW/WC) — seeds are generic defaults, every site keeps its own protocols
+  - defaults for layout, cine fps/direction, overlay visibility and
+    interpolation — new sessions and new devices start configured
+  - stored in the viewer DB, served by `/api/viewer-preferences`
+- **Sync mode** (RadiAnt "link"): stack scroll, cine playback and W/L presets
+  fan out to **every loaded tile** — scroll two series together, play all
+  cines in lockstep
+- **Persistent invert toggle** (Horos-style, per tile, stays until reset)
+- **Interpolation toggle** — smooth (linear) vs pixelated (nearest-neighbour)
+- **Slice scrubber** on the active tile + jump-to-slice (drag the slider)
+- **Orientation markers** — R/L/A/P (S/I where applicable) derived from each
+  image's `ImageOrientationPatient`, honouring rotation and flips, Horos-style
+- **Double-click a tile to maximize it** (RadiAnt behaviour), click again to
+  restore the grid
+- **Fill tiles** — one button distributes the active study's series across
+  all tiles
+- **PNG export** of the active tile (Horos "Export image")
+- **Fullscreen** mode
+- **Annotations panel** — lists every measurement (length, angle, ROI
+  mean/σ/area) and clears them all
+- **Keyboard shortcuts** (Horos/RadiAnt-style, data-driven, `?` shows help):
+  `1–0` tools, `Alt+1…6` layouts, `↑/↓/PgUp/PgDn` scroll, `Space` cine,
+  `+/−` zoom, `i` invert, `h/v` flip, `r/Shift+R` rotate, `f/Shift+F` fit,
+  `m` maximize, `y` sync, `o` overlays, `p` PNG, `a` measurements
+- **Text overlay toggle** (hide patient info for demos/screenshots)
+
 ### Ideas taken from Horos (analysis)
 
 Horos (the open-source OsiriX fork) shaped several Phase 2 decisions:
@@ -74,7 +108,12 @@ Horos (the open-source OsiriX fork) shaped several Phase 2 decisions:
 | Cine/loop playback with fps + direction control | Cine engine with fps slider, forward/backward/oscillate, persisted prefs |
 | Layouts are presets, not code paths | Layouts live in one data table; toolbar/viewport render from it |
 | Series (smart) playlists → tiles | Thumbnails target the selected tile; tiles auto-fill from the series list |
-| Viewer preferences persist between runs | Cine prefs persist (localStorage), PACS/gateway/login persist in the DB |
+| Viewer preferences persist between runs | Server preferences (presets, defaults) + localStorage user tweaks |
+| Keyboard shortcuts for tools/actions | Full shortcut map, generated help dialog (`?`) |
+| Invert, flip, rotate, interpolation controls | Persistent invert, H/V flip, rotate, smooth/pixelated toggle |
+| ROI statistics (mean/σ/area) panel | Annotations panel with live values and clear-all |
+| Orientation markers on every tile | R/L/A/P(S/I) from ImageOrientationPatient, rotation/flip-aware |
+| Export image | One-click PNG of the active tile |
 | Gap: Horos has no web/mobile UI, no PACS polling | We add login, PWA/mobile, and the auto-puller service |
 
 Still on the roadmap from the Horos study: 3D MPR + thick-slab MIP, ROI
@@ -162,11 +201,19 @@ network only.
 |-------|-------|
 | 1 | MVP viewer ✅ |
 | 2 | Login, cine, layouts, PACS settings, auto-puller ✅ |
-| 3 | Synology release hardening + real PACS matrix testing |
-| 4 | Clinical tools: annotation persistence (GSPS), key images, DICOMDIR, export, DICOM send |
-| 5 | MPR (axial/coronal/sagittal) + thick-slab MIP |
-| 6 | Windows desktop (Tauri wrapper) |
-| 7 | iOS application (Capacitor, App Store) |
+| 2.5 | Horos feature pack: sync, presets editor, orientation markers, scrubber, shortcuts, measurements panel, PNG export ✅ |
+| 3 | Synology deployment dry-run + hardening, then DICOM send (C-STORE), measurement persistence (internal → GSPS), MPR + thick-slab MIP |
+| 4 | Key images, DICOMDIR import/export |
+| 5 | Windows desktop (Tauri wrapper) |
+| 6 | iOS application (Capacitor, App Store) |
+
+**Phase 3 order rationale:** the dry-run validates the whole stack on real
+hardware first (it is the project's stated primary target); **DICOM send** is
+a quick win on top of the existing Orthanc gateway (`/modalities/{id}/store`);
+**measurement persistence** starts with viewer-owned JSON persistence and
+graduates to true DICOM GSPS objects; **MPR/MIP** is the heaviest item (volume
+loader, full series in memory) and benefits from everything before it being
+stable.
 
 ## License
 

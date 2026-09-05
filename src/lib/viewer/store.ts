@@ -3,28 +3,35 @@
 /**
  * Viewer session state (client-side only).
  *
- * Phase 2 additions:
- *  - layouts: grid id + per-cell series assignment (RadiAnt/Horos style
- *    tiles; the active tile receives thumbnails and tool actions)
- *  - cine: loop playback with user-set fps and direction, persisted in
- *    localStorage (no hardcoded playback values - defaults only)
+ * Phase 2: layouts (grid id + per-cell series), cine (fps/direction).
+ * Phase 2.5 ("all of them and more"): sync scroll/cine, persistent invert,
+ * overlay + interpolation toggles, maximized tile, annotations panel,
+ * server-backed window presets and defaults (nothing hardcoded here -
+ * seeds come from /api/viewer-preferences, personal tweaks from localStorage).
  */
 import { create } from "zustand";
 import type { StudyInfo, SeriesInfo } from "./loader";
 import { cellCount, getLayout } from "./layouts";
+import {
+  fetchViewerPrefs,
+  loadUiOverrides,
+  saveUiOverrides,
+  FALLBACK_PREFS,
+  type ViewerPrefs,
+  type WindowPreset,
+} from "./preferences";
 
 export type ToolId =
   | "windowlevel"
   | "zoom"
   | "pan"
-  | "crosshair"
+  | "stackscroll"
   | "length"
   | "angle"
   | "ellipse"
   | "rectangle"
   | "arrow"
-  | "probe"
-  | "stackscroll";
+  | "probe";
 
 export type CineDirection = "forward" | "backward" | "oscillate";
 
@@ -35,36 +42,7 @@ export interface LoadProgress {
   total: number;
 }
 
-/** localStorage keys - single place so nothing leaks into components. */
-export const CINE_PREFS_KEY = "dvv_cine_prefs_v1";
-
-interface CinePrefs {
-  fps: number;
-  direction: CineDirection;
-}
-
-export function loadCinePrefs(): CinePrefs {
-  if (typeof window === "undefined") return { fps: 15, direction: "forward" };
-  try {
-    const raw = window.localStorage.getItem(CINE_PREFS_KEY);
-    if (!raw) return { fps: 15, direction: "forward" };
-    const p = JSON.parse(raw) as Partial<CinePrefs>;
-    const fps = Math.min(60, Math.max(1, Math.round(Number(p.fps) || 15)));
-    const direction: CineDirection =
-      p.direction === "backward" || p.direction === "oscillate" ? p.direction : "forward";
-    return { fps, direction };
-  } catch {
-    return { fps: 15, direction: "forward" };
-  }
-}
-
-function saveCinePrefs(p: CinePrefs) {
-  try {
-    window.localStorage.setItem(CINE_PREFS_KEY, JSON.stringify(p));
-  } catch {
-    /* private mode - prefs just won't persist */
-  }
-}
+export { getLayout, cellCount };
 
 interface ViewerState {
   studies: StudyInfo[];
@@ -79,11 +57,26 @@ interface ViewerState {
   layoutId: string;
   cellSeries: (string | null)[]; // explicit series per tile; null = follow active
   activeCell: number;
+  maximizedCell: number | null; // double-click a tile to fill the grid with it
 
   // cine
   cinePlaying: boolean;
   cineFps: number;
   cineDirection: CineDirection;
+
+  // view toggles (Phase 2.5)
+  syncEnabled: boolean; // scroll + cine apply to every loaded tile
+  inverted: boolean; // persistent invert on the active tile
+  showOverlays: boolean;
+  smoothInterpolation: boolean;
+
+  // panels / dialogs
+  annotationsOpen: boolean;
+  helpOpen: boolean;
+
+  // server-backed presets (Settings > Viewer edits these)
+  presets: WindowPreset[];
+  prefsLoaded: boolean;
 
   setStudies: (s: StudyInfo[]) => void;
   addStudies: (s: StudyInfo[]) => void;
@@ -99,13 +92,27 @@ interface ViewerState {
   setActiveCell: (i: number) => void;
   assignSeriesToActiveCell: (seriesUid: string) => void;
   clearCell: (i: number) => void;
+  toggleMaximize: (i: number) => void;
 
   // cine actions
   toggleCine: () => void;
   stopCine: () => void;
   setCineFps: (fps: number) => void;
   setCineDirection: (d: CineDirection) => void;
-  initCinePrefs: () => void;
+
+  // view toggle actions
+  toggleSync: () => void;
+  setInverted: (v: boolean) => void;
+  toggleOverlays: () => void;
+  toggleInterpolation: () => void;
+
+  // panels
+  toggleAnnotations: () => void;
+  setHelpOpen: (v: boolean) => void;
+
+  // preferences (server seeds + localStorage overrides)
+  initViewerPrefs: () => Promise<void>;
+  setPresets: (p: WindowPreset[]) => void;
 }
 
 export const useViewerStore = create<ViewerState>((set, get) => ({
@@ -117,13 +124,25 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
   error: null,
   sidebarOpen: true,
 
-  layoutId: "1x1",
+  layoutId: FALLBACK_PREFS.defaults.layoutId,
   cellSeries: [null],
   activeCell: 0,
+  maximizedCell: null,
 
   cinePlaying: false,
-  cineFps: 15,
-  cineDirection: "forward",
+  cineFps: FALLBACK_PREFS.defaults.cineFps,
+  cineDirection: FALLBACK_PREFS.defaults.cineDirection,
+
+  syncEnabled: false,
+  inverted: false,
+  showOverlays: FALLBACK_PREFS.defaults.showOverlays,
+  smoothInterpolation: FALLBACK_PREFS.defaults.smoothInterpolation,
+
+  annotationsOpen: false,
+  helpOpen: false,
+
+  presets: FALLBACK_PREFS.presets,
+  prefsLoaded: false,
 
   setStudies: (s) => set({ studies: s }),
   addStudies: (incoming) =>
@@ -154,12 +173,10 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
 
   /* --------------------------- layout actions --------------------------- */
 
-  setLayout: (id) =>
+  setLayout: (id) => {
+    saveUiOverrides({ layoutId: id });
     set((state) => {
       const n = cellCount(id);
-      if (n === state.cellSeries.length && state.layoutId === id) {
-        return { layoutId: id, activeCell: Math.min(state.activeCell, n - 1) };
-      }
       // preserve explicit assignments; auto-fill new tiles by cycling the
       // series of the active study (Horos-like initial fill)
       const study = state.studies.find((s) => s.studyUid === state.activeStudyUid);
@@ -179,8 +196,10 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
         layoutId: id,
         cellSeries: next,
         activeCell: Math.min(state.activeCell, n - 1),
+        maximizedCell: null,
       };
-    }),
+    });
+  },
 
   setActiveCell: (i) => set({ activeCell: Math.max(0, i) }),
 
@@ -198,6 +217,9 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
       return { cellSeries };
     }),
 
+  toggleMaximize: (i) =>
+    set((state) => ({ maximizedCell: state.maximizedCell === i ? null : i })),
+
   /* ---------------------------- cine actions ---------------------------- */
 
   toggleCine: () => set((s) => ({ cinePlaying: !s.cinePlaying })),
@@ -205,16 +227,54 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
   setCineFps: (fps) => {
     const clamped = Math.min(60, Math.max(1, Math.round(fps) || 15));
     set({ cineFps: clamped });
-    saveCinePrefs({ fps: clamped, direction: get().cineDirection });
+    saveUiOverrides({ cineFps: clamped });
   },
   setCineDirection: (d) => {
     set({ cineDirection: d });
-    saveCinePrefs({ fps: get().cineFps, direction: d });
+    saveUiOverrides({ cineDirection: d });
   },
-  initCinePrefs: () => {
-    const p = loadCinePrefs();
-    set({ cineFps: p.fps, cineDirection: p.direction });
+
+  /* --------------------------- view toggles ----------------------------- */
+
+  toggleSync: () => set((s) => ({ syncEnabled: !s.syncEnabled })),
+  setInverted: (v) => set({ inverted: v }),
+  toggleOverlays: () => {
+    const v = !get().showOverlays;
+    saveUiOverrides({ showOverlays: v });
+    set({ showOverlays: v });
   },
+  toggleInterpolation: () => {
+    const v = !get().smoothInterpolation;
+    saveUiOverrides({ smoothInterpolation: v });
+    set({ smoothInterpolation: v });
+  },
+
+  /* ------------------------------ panels -------------------------------- */
+
+  toggleAnnotations: () => set((s) => ({ annotationsOpen: !s.annotationsOpen })),
+  setHelpOpen: (v) => set({ helpOpen: v }),
+
+  /* --------------------------- preferences ------------------------------ */
+
+  initViewerPrefs: async () => {
+    const [prefs, overrides] = await Promise.all([fetchViewerPrefs(), Promise.resolve(loadUiOverrides())]);
+    const layoutId = getLayout(overrides.layoutId ?? prefs.defaults.layoutId).id;
+    set((state) => ({
+      presets: prefs.presets,
+      prefsLoaded: true,
+      layoutId,
+      cellSeries:
+        state.cellSeries.length === cellCount(layoutId)
+          ? state.cellSeries
+          : Array.from({ length: cellCount(layoutId) }, (_, i) => state.cellSeries[i] ?? null),
+      cineFps: overrides.cineFps ?? prefs.defaults.cineFps,
+      cineDirection: overrides.cineDirection ?? prefs.defaults.cineDirection,
+      showOverlays: overrides.showOverlays ?? prefs.defaults.showOverlays,
+      smoothInterpolation: overrides.smoothInterpolation ?? prefs.defaults.smoothInterpolation,
+    }));
+  },
+
+  setPresets: (p) => set({ presets: p }),
 }));
 
 export function getActiveSeries(
@@ -239,5 +299,3 @@ export function findSeriesAnywhere(
   }
   return { study: null, series: null };
 }
-
-export { getLayout };
