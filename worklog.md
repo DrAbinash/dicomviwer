@@ -77,7 +77,15 @@ Agent: main
 Task: commit v0.4.0 and push all work to GitHub
 
 Work Log:
-- (this commit)
+- Commit 18b6075 "Phase 2.5: full Horos-inspired feature pack - zero hardcoded
+  viewer config" (18 files, +1749/-148)
+- Pushed to github.com/DrAbinash/dicomviwer main (3b0d739..18b6075); remote
+  HEAD verified = 18b6075
+- Packaged /home/z/my-project/download/dicomviewer-v0.4.0.zip via git archive
+
+Stage Summary:
+- GitHub main = v0.4.0 with Phase 1 + 2 + 2.5 complete
+- Phase 3 recommended order: Synology dry-run -> DICOM send -> GSPS -> MPR/MIP
 
 ---
 Task ID: 3 (candidates, user asked)
