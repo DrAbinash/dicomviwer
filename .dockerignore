@@ -1,0 +1,13 @@
+node_modules
+.next
+.git
+.env
+.env.local
+
+*.log
+db
+research_*.json
+dicomviwer
+skills
+tool-results
+worklog.md

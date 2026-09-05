@@ -1,0 +1,28 @@
+# Caddy reverse proxy - the only public entry point of the stack.
+#
+# LAN use (self-signed): leave ACME_HOSTNAME=localhost in .env.
+# Public use (Synology DDNS): set ACME_HOSTNAME=yourname.synology.me and
+# forward only 443 to this container; keep DSM's own ports closed.
+
+{
+	auto_https disable_redirects
+	servers {
+		protocols h1 h2
+	}
+}
+
+{$ACME_HOSTNAME} {
+	encode gzip zstd
+
+	# viewer application
+	handle {
+		reverse_proxy {$VIEWER_UPSTREAM}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=15552000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}

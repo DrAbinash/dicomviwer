@@ -1,0 +1,46 @@
+{
+  "Name": "SYNOLOGYVIEWER",
+  "DicomAet": "SYNOLOGYVIEWER",
+  "DicomPort": 4242,
+  "HttpPort": 8042,
+
+  "RemoteAccessAllowed": true,
+  "AuthenticationEnabled": true,
+
+  "DicomModalities": {
+    "REMOTEPACS": ["REMOTEPACS", "192.168.1.100", 4242]
+  },
+
+  "DicomScpEnabled": true,
+  "DicomScuEnabled": true,
+
+  "DicomAssociationEchoTimeout": 10,
+  "DicomAssociationTimeout": 30,
+
+  "Plugins": [],
+
+  "DicomWeb": {
+    "Enable": true,
+    "Root": "/dicom-web/",
+    "EnableWado": true,
+    "WadoRoot": "/wado",
+    "Ssl": false,
+    "StowMaxInstantSize": 10
+  },
+
+  "OrthancPeers": {},
+
+  "DefaultEncoding": "Latin1",
+  "DeflatedDataDirectory": "/var/lib/orthanc/db",
+  "StorageDirectory": "/var/lib/orthanc/db",
+  "IndexDirectory": "/var/lib/orthanc/db",
+
+  "MaximumStorageSize": 0,
+  "MaximumPatientCount": 0,
+
+  "JobsHistorySize": 10,
+
+  "LimitFindResults": 0,
+  "LimitFindInstances": 0,
+  "LimitJobs": 10
+}

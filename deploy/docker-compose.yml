@@ -1,0 +1,83 @@
+# DICOM Viewer - Synology deployment stack
+# Tested target: Synology DSM 7.2+ with Container Manager.
+#
+# Usage (Container Manager):
+#   1. Copy this folder to a share on the NAS (e.g. /docker/dicomviewer).
+#   2. Create the .env file from .env.example and fill in the secrets.
+#   3. Container Manager -> Project -> Create -> select docker-compose.yml
+#      -> use the deploy folder as source -> Build.
+#
+# Usage (any Docker host):
+#   cp .env.example .env  # edit values
+#   docker compose up -d --build
+#
+# The stack exposes ONLY Caddy (80/443). The viewer and Orthanc stay on the
+# internal compose network; the browser reaches Orthanc exclusively through
+# the viewer's /api/pacs proxy.
+
+services:
+  viewer:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    environment:
+      # Orthanc is reachable inside the compose network
+      ORTHANC_URL: http://orthanc:8042
+      ORTHANC_USERNAME: ${ORTHANC_USER}
+      ORTHANC_PASSWORD: ${ORTHANC_PASSWORD}
+      NODE_ENV: production
+      PORT: 3000
+    depends_on:
+      - orthanc
+    restart: unless-stopped
+    networks: [dicom]
+
+  orthanc:
+    image: orthancteam/orthanc:24.10.2
+    # Uncomment to expose the DICOM port to the NAS network so a remote PACS
+    # can C-STORE into this cache (or when this NAS itself must be a move
+    # destination for another device):
+    # ports:
+    #   - "4242:4242"
+    volumes:
+      - orthanc-data:/var/lib/orthanc/db
+    command: /etc/orthanc/orthanc.json
+    environment:
+      ORTHANC_NAME: ${ORTHANC_AE_TITLE}
+      ORTHANC_USERNAME: ${ORTHANC_USER}
+      ORTHANC_PASSWORD: ${ORTHANC_PASSWORD}
+    # The JSON config in orthanc.json reads remote PACS nodes from the
+    # "DicomModalities" section - edit it for your site (AE title, host, port).
+    configs:
+      - source: orthanc_config
+        target: /etc/orthanc/orthanc.json
+    restart: unless-stopped
+    networks: [dicom]
+
+  caddy:
+    image: caddy:2.8-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      VIEWER_UPSTREAM: viewer:3000
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - viewer
+    restart: unless-stopped
+    networks: [dicom]
+
+configs:
+  orthanc_config:
+    file: ./orthanc.json
+
+volumes:
+  orthanc-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  dicom:
