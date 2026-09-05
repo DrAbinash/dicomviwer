@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getGatewayConfig, basicAuth } from "@/lib/server/config";
+import { requireSession } from "@/lib/server/auth";
 
 /**
  * DICOMweb proxy toward Orthanc.
@@ -18,6 +19,9 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 async function proxy(req: NextRequest, path: string[]) {
+  const denied = await requireSession(req);
+  if (denied) return denied;
+
   // Special endpoint: reports whether the gateway is configured (no proxying).
   if (path.length === 1 && path[0] === "health") {
     const cfg = await getGatewayConfig();

@@ -25,7 +25,7 @@ export async function ensureCornerstone(): Promise<void> {
   state = "starting";
   initPromise = (async () => {
     try {
-      csCoreInit({});
+      csCoreInit({} as never);
       csToolsInit();
       initImageLoader({});
       state = "ready";

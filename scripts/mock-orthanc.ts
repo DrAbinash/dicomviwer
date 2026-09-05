@@ -19,6 +19,9 @@ const PORT = 3030;
 const SAMPLE_DIR = "/home/z/my-project/public/samples/phantom-ct";
 const MODALITY_AET = "MOCKPACS";
 const LOG_FILE = "/tmp/mock-orthanc.log";
+// When 1, /tools/find pretends the local cache is empty so the auto-puller's
+// "missing study" detection path can be exercised end-to-end.
+const EMPTY_LOCAL = process.env.MOCK_EMPTY_LOCAL === "1";
 
 function log(msg: string) {
   const line = `[mock-orthanc] ${msg}`;
@@ -83,6 +86,10 @@ modalities.set(MODALITY_AET, { AET: MODALITY_AET, Host: "127.0.0.1", Port: 104 }
 
 const jobs = new Map<string, { progress: number; state: string }>();
 let jobCounter = 0;
+
+// auto-puller flow: /modalities/{id}/query -> /queries/{id}/answers[...]
+const queries = new Map<string, { answers: Array<Record<string, unknown>> }>();
+let queryCounter = 0;
 
 /* ---------------- helpers ---------------- */
 
@@ -200,8 +207,8 @@ BUN.serve({
         : json({ Message: "Unknown resource" }, 404);
     }
 
-    // echo / find / get / move
-    const modMatch = p.match(/^\/modalities\/([^/]+)\/(echo|find|get|move)$/);
+    // echo / find / query / get / move
+    const modMatch = p.match(/^\/modalities\/([^/]+)\/(echo|find|query|get|move)$/);
     if (modMatch) {
       const [, id, action] = modMatch;
       if (!modalities.has(id) && !modalities.has(id.toUpperCase()))
@@ -216,7 +223,43 @@ BUN.serve({
         await new Promise((r) => setTimeout(r, 150));
         return json(studyFindAnswers());
       }
+      if (action === "query") {
+        // old-style C-FIND: returns a query id, answers served under /queries.
+        // Real Orthanc serves answer content with comma-separated tag keys
+        // ("0020,000D"), unlike the /find route - convert to stay faithful.
+        const toCommaKeys = (ds: Record<string, unknown>) =>
+          Object.fromEntries(
+            Object.entries(ds).map(([k, v]) => [`${k.slice(0, 4)},${k.slice(4)}`, v])
+          );
+        const qid = `query-${++queryCounter}`;
+        queries.set(qid, { answers: studyFindAnswers().map(toCommaKeys) });
+        log(`query created ${qid} (answers: 1)`);
+        return json({ ID: qid, Level: "Study" });
+      }
       // get / move -> start a job
+      const jobId = `job-${++jobCounter}`;
+      jobs.set(jobId, { progress: 0, state: "Running" });
+      return json({ ID: jobId });
+    }
+
+    // ---------- queries (auto-puller flow) ----------
+    const qAnswers = p.match(/^\/queries\/([^/]+)\/answers$/);
+    if (qAnswers && m === "GET") {
+      const q = queries.get(qAnswers[1]);
+      if (!q) return json({ Message: "Unknown query" }, 404);
+      return json(q.answers.map((_, i) => String(i)));
+    }
+    const qContent = p.match(/^\/queries\/([^/]+)\/answers\/([^/]+)\/content$/);
+    if (qContent && m === "GET") {
+      const q = queries.get(qContent[1]);
+      const idx = parseInt(qContent[2], 10);
+      if (!q || !q.answers[idx]) return json({ Message: "Unknown answer" }, 404);
+      return json(q.answers[idx]);
+    }
+    const qRetrieve = p.match(/^\/queries\/([^/]+)\/answers\/([^/]+)\/retrieve$/);
+    if (qRetrieve && m === "POST") {
+      const body = (await req.json().catch(() => ({}))) as { TargetAet?: string };
+      log(`retrieve answer -> target ${body.TargetAet ?? "?"}`);
       const jobId = `job-${++jobCounter}`;
       jobs.set(jobId, { progress: 0, state: "Running" });
       return json({ ID: jobId });
@@ -244,6 +287,7 @@ BUN.serve({
     if (m === "POST" && p === "/tools/find") {
       const body = (await req.json()) as { Query?: Record<string, string> };
       const uid = body.Query?.StudyInstanceUID;
+      if (EMPTY_LOCAL) return json([], 200); // simulate empty local cache
       if (uid && study && uid !== study.studyUid) return json([], 200);
       return json(["mock-orthanc-study-id"]);
     }

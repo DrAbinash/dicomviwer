@@ -9,6 +9,10 @@
  *  2. PACS list — user-added remote PACS servers (AE Title / IP / Port).
  *                 Saving a server registers it as a DICOM modality on the
  *                 gateway; "Test" performs a real C-ECHO handshake.
+ *  3. Auto-Pull — Phase 2 poller monitoring: last cycle summary and the
+ *                 recent per-study activity written by the auto-puller
+ *                 service via its heartbeat.
+ *  4. Security  — change the viewer login (username / password).
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -27,11 +31,14 @@ import { Separator } from "@/components/ui/separator";
 import {
   createServer,
   deleteServer,
+  getAutoPullStatus,
   getGatewayInfo,
   listServers,
   saveGatewaySettings,
   testServer,
+  updateCredentials,
   updateServer,
+  type AutoPullStatus,
   type GatewayInfo,
   type PacsServerInfo,
 } from "@/lib/viewer/pacs";
@@ -77,6 +84,17 @@ export default function SettingsDialog({ open, onOpenChange }: Props) {
   const [testMsg, setTestMsg] = useState<{ id: string; ok: boolean; text: string } | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
+  // security form
+  const [secCurrent, setSecCurrent] = useState("");
+  const [secUser, setSecUser] = useState("");
+  const [secPass, setSecPass] = useState("");
+  const [secBusy, setSecBusy] = useState(false);
+  const [secMsg, setSecMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // auto-pull monitoring
+  const [autoPull, setAutoPull] = useState<AutoPullStatus | null>(null);
+  const [apLoading, setApLoading] = useState(false);
+
   const refresh = useCallback(async () => {
     setLoading(true);
     setPageError(null);
@@ -100,9 +118,47 @@ export default function SettingsDialog({ open, onOpenChange }: Props) {
       setTestMsg(null);
       setConfirmDeleteId(null);
       setEditor({ mode: "closed" });
+      setSecMsg(null);
+      setSecCurrent("");
+      setSecPass("");
       refresh();
     }
   }, [open, refresh]);
+
+  const refreshAutoPull = useCallback(async () => {
+    setApLoading(true);
+    try {
+      setAutoPull(await getAutoPullStatus());
+    } catch {
+      setAutoPull(null);
+    } finally {
+      setApLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (open) refreshAutoPull();
+  }, [open, refreshAutoPull]);
+
+  async function saveSecurity() {
+    setSecBusy(true);
+    setSecMsg(null);
+    try {
+      const r = await updateCredentials({
+        currentPassword: secCurrent,
+        newUsername: secUser || undefined,
+        newPassword: secPass || undefined,
+      });
+      setSecMsg({ ok: true, text: `Saved. The login is now "${r.username}" — use it on the next sign-in.` });
+      setSecCurrent("");
+      setSecPass("");
+      setSecUser("");
+    } catch (e) {
+      setSecMsg({ ok: false, text: e instanceof Error ? e.message : "Update failed" });
+    } finally {
+      setSecBusy(false);
+    }
+  }
 
   async function saveGateway() {
     setGwBusy(true);
@@ -227,12 +283,18 @@ export default function SettingsDialog({ open, onOpenChange }: Props) {
         </DialogHeader>
 
         <Tabs defaultValue="pacs" className="flex min-h-0 flex-1 flex-col gap-3">
-          <TabsList className="grid w-full grid-cols-2 bg-zinc-900">
-            <TabsTrigger value="pacs" className="data-[state=active]:bg-zinc-800 data-[state=active]:text-teal-300">
-              PACS servers
+          <TabsList className="grid w-full grid-cols-4 bg-zinc-900">
+            <TabsTrigger value="pacs" className="px-1 data-[state=active]:bg-zinc-800 data-[state=active]:text-teal-300">
+              PACS
             </TabsTrigger>
-            <TabsTrigger value="gateway" className="data-[state=active]:bg-zinc-800 data-[state=active]:text-teal-300">
+            <TabsTrigger value="gateway" className="px-1 data-[state=active]:bg-zinc-800 data-[state=active]:text-teal-300">
               Gateway
+            </TabsTrigger>
+            <TabsTrigger value="autopull" className="px-1 data-[state=active]:bg-zinc-800 data-[state=active]:text-teal-300">
+              Auto-Pull
+            </TabsTrigger>
+            <TabsTrigger value="security" className="px-1 data-[state=active]:bg-zinc-800 data-[state=active]:text-teal-300">
+              Security
             </TabsTrigger>
           </TabsList>
 
@@ -528,6 +590,185 @@ export default function SettingsDialog({ open, onOpenChange }: Props) {
               </span>
               <Button onClick={saveGateway} disabled={gwBusy} className={btnPrimary}>
                 {gwBusy ? "Testing…" : "Save & test"}
+              </Button>
+            </div>
+          </TabsContent>
+
+          {/* -------------------------- Auto-Pull --------------------------- */}
+          <TabsContent value="autopull" className="flex min-h-0 flex-col gap-3 data-[state=inactive]:hidden">
+            {apLoading && <div className="text-xs text-zinc-500">Checking auto-puller…</div>}
+
+            {!apLoading && !autoPull?.lastCycle && (
+              <div className="rounded border border-zinc-800 bg-zinc-900/60 px-3 py-4 text-xs leading-5 text-zinc-500">
+                No heartbeat received yet. The Phase 2 auto-puller is a separate
+                service (<span className="font-mono">deploy/auto-puller</span>) that queries your
+                modalities every cycle and pulls missing studies into the
+                gateway automatically. Enable it in the deployment .env — every
+                cycle then shows up here.
+              </div>
+            )}
+
+            {!apLoading && autoPull?.lastCycle && (
+              <div className="rounded border border-teal-900/60 bg-teal-900/10 px-3 py-2 text-xs leading-5">
+                <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                  <span className="font-semibold text-teal-200">
+                    Last cycle {new Date(autoPull.lastHeartbeatAt ?? autoPull.lastCycle.finishedAt).toLocaleString()}
+                  </span>
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                      autoPull.lastCycle.status === "ok"
+                        ? "bg-emerald-900/40 text-emerald-300"
+                        : autoPull.lastCycle.status === "partial"
+                          ? "bg-amber-900/40 text-amber-300"
+                          : "bg-rose-900/40 text-rose-300"
+                    }`}
+                  >
+                    {autoPull.lastCycle.status}
+                  </span>
+                </div>
+                <div className="mt-1 text-zinc-400">
+                  every {autoPull.lastCycle.pollIntervalSeconds || "?"}s · lookback{" "}
+                  {autoPull.lastCycle.lookbackDays || "?"}d · target AET{" "}
+                  <span className="font-mono text-zinc-300">{autoPull.lastCycle.targetAet || "?"}</span>
+                </div>
+                <div className="mt-1 flex gap-3 text-zinc-300">
+                  <span className="text-emerald-300">{autoPull.lastCycle.pulled} pulled</span>
+                  <span className="text-zinc-400">{autoPull.lastCycle.skipped} skipped</span>
+                  <span className="text-rose-300">{autoPull.lastCycle.failed} failed</span>
+                </div>
+                {autoPull.lastCycle.modalities?.length > 0 && (
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {autoPull.lastCycle.modalities.map((m) => (
+                      <span
+                        key={m.name}
+                        title={m.error || "polled"}
+                        className={`rounded bg-zinc-900 px-1.5 py-0.5 text-[10px] ${
+                          m.error ? "text-rose-300" : "text-zinc-400"
+                        }`}
+                      >
+                        {m.name}
+                        {m.error ? " ⚠" : ""}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {autoPull && autoPull.events.length > 0 && (
+              <div className="min-h-0 w-full flex-1 overflow-y-auto rounded border border-zinc-800">
+                <div className="divide-y divide-zinc-900">
+                  {autoPull.events.map((ev) => (
+                    <div key={ev.id} className="flex w-full min-w-0 items-center gap-2 px-3 py-1.5 text-[11px]">
+                      <span
+                        className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                          ev.action === "pulled"
+                            ? "bg-emerald-400"
+                            : ev.action === "failed"
+                              ? "bg-rose-500"
+                              : "bg-zinc-600"
+                        }`}
+                        title={ev.action}
+                      />
+                      <span className="w-20 shrink-0 truncate font-mono text-zinc-500" title={ev.sourceAet}>
+                        {ev.sourceAet}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-zinc-300">
+                        {ev.patientName || ev.patientId || ev.studyUid}
+                        {ev.patientId ? <span className="text-zinc-600"> · {ev.patientId}</span> : null}
+                      </span>
+                      <span className="hidden shrink-0 text-zinc-600 sm:inline">{ev.detail}</span>
+                      <span className="shrink-0 text-zinc-600">
+                        {new Date(ev.createdAt).toLocaleTimeString()}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="mt-auto flex items-center justify-between">
+              <span className="text-[11px] leading-4 text-zinc-600">
+                Configured via env: <span className="font-mono">MODALITIES</span>,{" "}
+                <span className="font-mono">POLL_INTERVAL_SECONDS</span>,{" "}
+                <span className="font-mono">LOOKBACK_DAYS</span>.
+                {autoPull?.tokenProtected ? " Heartbeat is token-protected." : ""}
+              </span>
+              <Button
+                variant="outline"
+                onClick={refreshAutoPull}
+                className="h-8 shrink-0 border-teal-700/60 px-2 text-xs text-teal-300 hover:bg-teal-900/30"
+              >
+                Refresh
+              </Button>
+            </div>
+          </TabsContent>
+
+          {/* --------------------------- Security --------------------------- */}
+          <TabsContent value="security" className="flex min-h-0 flex-col gap-3 data-[state=inactive]:hidden">
+            <p className="text-xs leading-5 text-zinc-500">
+              Change the viewer login. Credentials are stored hashed (scrypt) in
+              the viewer database and override the deployment&apos;s{" "}
+              <span className="font-mono">AUTH_USERNAME</span> /{" "}
+              <span className="font-mono">AUTH_PASSWORD</span> defaults.
+            </p>
+            <div className="grid grid-cols-1 gap-2.5">
+              <div className="grid gap-1">
+                <Label htmlFor="sec-current" className="text-xs text-zinc-400">
+                  Current password
+                </Label>
+                <Input
+                  id="sec-current"
+                  type="password"
+                  value={secCurrent}
+                  onChange={(e) => setSecCurrent(e.target.value)}
+                  autoComplete="current-password"
+                  className={inputCls}
+                  placeholder="••••••••"
+                />
+              </div>
+              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                <div className="grid gap-1">
+                  <Label htmlFor="sec-user" className="text-xs text-zinc-400">
+                    New username (optional)
+                  </Label>
+                  <Input
+                    id="sec-user"
+                    value={secUser}
+                    onChange={(e) => setSecUser(e.target.value)}
+                    placeholder="keep current"
+                    autoComplete="off"
+                    className={inputCls}
+                  />
+                </div>
+                <div className="grid gap-1">
+                  <Label htmlFor="sec-pass" className="text-xs text-zinc-400">
+                    New password (optional)
+                  </Label>
+                  <Input
+                    id="sec-pass"
+                    type="password"
+                    value={secPass}
+                    onChange={(e) => setSecPass(e.target.value)}
+                    placeholder="keep current"
+                    autoComplete="new-password"
+                    className={inputCls}
+                  />
+                </div>
+              </div>
+            </div>
+            {secMsg && (
+              <div
+                className={`rounded px-3 py-2 text-xs leading-4 ${
+                  secMsg.ok ? "bg-emerald-900/30 text-emerald-300" : "bg-rose-950/50 text-rose-300"
+                }`}
+              >
+                {secMsg.text}
+              </div>
+            )}
+            <div className="flex justify-end">
+              <Button onClick={saveSecurity} disabled={secBusy || !secCurrent} className={btnPrimary}>
+                {secBusy ? "Saving…" : "Update login"}
               </Button>
             </div>
           </TabsContent>

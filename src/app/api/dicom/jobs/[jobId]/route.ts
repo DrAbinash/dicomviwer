@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jobStatus, OrthancError } from "@/lib/server/orthanc";
+import { requireSession } from "@/lib/server/auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /** GET /api/dicom/jobs/[jobId] — poll an Orthanc job (retrieve progress). */
-export async function GET(_req: NextRequest, ctx: { params: Promise<{ jobId: string }> }) {
+export async function GET(req: NextRequest, ctx: { params: Promise<{ jobId: string }> }) {
+  const denied = await requireSession(req);
+  if (denied) return denied;
   const { jobId } = await ctx.params;
   try {
     const status = await jobStatus(jobId);

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { findStudiesRemote, OrthancError, type RemoteStudy } from "@/lib/server/orthanc";
+import { requireSession } from "@/lib/server/auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -11,6 +12,8 @@ export const runtime = "nodejs";
  * shape the viewer's PACS dialog already renders.
  */
 export async function POST(req: NextRequest) {
+  const denied = await requireSession(req);
+  if (denied) return denied;
   let body: Record<string, unknown>;
   try {
     body = (await req.json()) as Record<string, unknown>;

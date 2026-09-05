@@ -1,26 +1,33 @@
 {
-  "Name": "SYNOLOGYVIEWER",
-  "DicomAet": "SYNOLOGYVIEWER",
+  "Name": "CareDiagnostics",
+  "DicomAet": "ORTHANC2",
   "DicomPort": 4242,
   "HttpPort": 8042,
 
   "RemoteAccessAllowed": true,
   "AuthenticationEnabled": true,
 
+  "_Comment_Modalities": "Site PACS nodes seeded at FIRST start (DicomModalitiesInDatabase imports them, then the viewer Settings UI manages them via REST - add/edit/delete IP, AE Title and port from the browser). Replace the IPs/ports with your site values or manage them entirely from Settings.",
+
   "DicomModalities": {
-    "REMOTEPACS": ["REMOTEPACS", "192.168.1.100", 4242]
+    "UIH_MRI": ["UIH", "172.16.1.103", 3333],
+    "CT_MACHINE": ["ct99", "172.16.1.99", 4006],
+    "weasis-clinic": ["weasis123", "172.16.1.140", 11113],
+    "weasis-su": ["weasissu", "172.16.1.141", 11113],
+    "GE-Voluson-E9": ["Voluson", "172.16.1.46", 104],
+    "XRAY_1": ["film plus", "172.16.1.80", 105],
+    "XRAY_2": ["film plus", "172.16.1.90", 105]
   },
 
-  "_Comment": "PACS servers added in the viewer Settings UI are registered here at runtime (REST PUT /modalities). The static REMOTEPACS entry is imported once at first start.",
   "DicomModalitiesInDatabase": true,
 
+  "DicomAlwaysAllowStore": true,
+  "DicomCheckCalledAet": false,
   "DicomScpEnabled": true,
   "DicomScuEnabled": true,
 
   "DicomAssociationEchoTimeout": 10,
   "DicomAssociationTimeout": 30,
-
-  "Plugins": [],
 
   "DicomWeb": {
     "Enable": true,
@@ -29,6 +36,13 @@
     "WadoRoot": "/wado",
     "Ssl": false,
     "StowMaxInstantSize": 10
+  },
+
+  "Worklists": {
+    "Enable": true,
+    "Database": "/var/lib/orthanc/db/worklists",
+    "SetStudyInstanceUidIfMissing": true,
+    "DeleteWorklistsOnStableStudy": true
   },
 
   "OrthancPeers": {},

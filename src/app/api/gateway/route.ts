@@ -6,12 +6,15 @@ import {
   getSettings,
 } from "@/lib/server/config";
 import { trySystemInfo, listModalities, type ModalityConfig } from "@/lib/server/orthanc";
+import { requireSession } from "@/lib/server/auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /** GET /api/gateway — gateway status + registered DICOM modalities. */
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const denied = await requireSession(req);
+  if (denied) return denied;
   const cfg = await getGatewayConfig();
   const s = await getSettings(["gatewayUrl", "gatewayUsername", "gatewayAet"]);
   const sys = cfg ? await trySystemInfo() : null;
@@ -55,6 +58,8 @@ export async function GET() {
  * dialog. Password omitted = keep existing; empty string = clear.
  */
 export async function PUT(req: NextRequest) {
+  const denied = await requireSession(req);
+  if (denied) return denied;
   let body: Record<string, unknown>;
   try {
     body = (await req.json()) as Record<string, unknown>;

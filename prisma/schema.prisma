@@ -1,6 +1,8 @@
 // Prisma schema for DICOM Viewer
 // - PacsServer: user-managed remote PACS connections (AE Title / IP / Port)
 // - AppSetting: key-value store for gateway (Orthanc) connection settings
+// - AutoPullEvent: activity log written by the Phase 2 auto-puller service
+//   (each detected study = pulled / skipped / failed) via its heartbeat POST
 
 generator client {
   provider = "prisma-client-js"
@@ -28,4 +30,21 @@ model AppSetting {
   key       String   @id
   value     String
   updatedAt DateTime @updatedAt
+}
+
+model AutoPullEvent {
+  id              String   @id @default(cuid())
+  sourceAet       String // modality the study was pulled from, e.g. UIH_MRI
+  studyUid        String
+  patientName     String   @default("")
+  patientId       String   @default("")
+  studyDescription String  @default("")
+  accessionNumber String   @default("")
+  action          String // "pulled" | "skipped" | "failed"
+  detail          String   @default("") // error text or skip reason
+  createdAt       DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([sourceAet, createdAt])
+  @@index([studyUid])
 }

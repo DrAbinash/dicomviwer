@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { validateServerInput, registerWithGateway, unregisterFromGateway } from "@/lib/server/pacs-server";
+import { requireSession } from "@/lib/server/auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -9,6 +10,8 @@ type Ctx = { params: Promise<{ id: string }> };
 
 /** PUT /api/pacs-servers/[id] — update a PACS connection. */
 export async function PUT(req: NextRequest, ctx: Ctx) {
+  const denied = await requireSession(req);
+  if (denied) return denied;
   const { id } = await ctx.params;
   let body: unknown;
   try {
@@ -58,7 +61,9 @@ export async function PUT(req: NextRequest, ctx: Ctx) {
 }
 
 /** DELETE /api/pacs-servers/[id] — remove a PACS connection. */
-export async function DELETE(_req: NextRequest, ctx: Ctx) {
+export async function DELETE(req: NextRequest, ctx: Ctx) {
+  const denied = await requireSession(req);
+  if (denied) return denied;
   const { id } = await ctx.params;
   const existing = await db.pacsServer.findUnique({ where: { id } });
   if (!existing) return NextResponse.json({ error: "PACS server not found" }, { status: 404 });

@@ -1,12 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { validateServerInput, registerWithGateway } from "@/lib/server/pacs-server";
+import { requireSession } from "@/lib/server/auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /** GET /api/pacs-servers — list user-configured PACS connections. */
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const denied = await requireSession(req);
+  if (denied) return denied;
   const servers = await db.pacsServer.findMany({
     orderBy: { createdAt: "asc" },
     select: {
@@ -27,6 +30,8 @@ export async function GET() {
 
 /** POST /api/pacs-servers — add a PACS connection (IP / AE Title / Port). */
 export async function POST(req: NextRequest) {
+  const denied = await requireSession(req);
+  if (denied) return denied;
   let body: unknown;
   try {
     body = await req.json();

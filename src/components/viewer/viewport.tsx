@@ -1,15 +1,21 @@
 "use client";
 
 /**
- * Cornerstone3D stack viewport with RadiAnt-style tool bindings:
- *  - left drag / one-finger drag : active tool (W/L default)
- *  - right drag / pinch          : zoom
- *  - middle drag                 : pan
- *  - wheel                       : stack scroll
- * Overlays: patient info (TL), window + zoom (TR), series info (BL),
- * slice position (BR) - updated from cornerstone events.
+ * Cornerstone3D multi-viewport grid (Phase 2, RadiAnt/Horos-style layouts).
+ *
+ *  - One RenderingEngine hosts up to rows×cols STACK viewports ("tiles").
+ *  - One ToolGroup is shared by every tile: tool bindings apply everywhere,
+ *    mouse/touch actions act on the active tile (teal outline).
+ *  - Tiles are assigned series from the store (cellSeries); tile 0 falls back
+ *    to the globally active series. Clicking a thumbnail loads it into the
+ *    active tile.
+ *  - Cine: rAF loop stepping the active tile at a user-set fps with
+ *    forward / backward / oscillate direction.
+ *
+ * Overlays per tile: patient info (TL), window + zoom (TR), series info (BL),
+ * slice position (BR) - updated from cornerstone element events.
  */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   RenderingEngine,
   Enums,
@@ -33,19 +39,40 @@ import {
   Enums as ToolsEnums,
 } from "@cornerstonejs/tools";
 const MouseBindings = ToolsEnums.MouseBindings;
-import { useViewerStore, getActiveSeries, type ToolId } from "@/lib/viewer/store";
-import { registerToolGroup, registerViewport } from "@/lib/viewer/api";
+import { StackViewport } from "@cornerstonejs/core";
+import {
+  useViewerStore,
+  findSeriesAnywhere,
+  type ToolId,
+} from "@/lib/viewer/store";
+import { getLayout } from "@/lib/viewer/layouts";
+import type { SeriesInfo, StudyInfo } from "@/lib/viewer/loader";
+import {
+  registerViewport,
+  registerToolGroup,
+  setActiveViewportCell,
+  getActiveCell,
+  getViewport,
+} from "@/lib/viewer/api";
 import { ensureCornerstone } from "@/lib/viewer/init";
 
 const RENDERING_ENGINE_ID = "dicomviewer-engine";
-const VIEWPORT_ID = "CT_STACK";
 const TOOLGROUP_ID = "stack-tools";
+
+const viewportIdFor = (cell: number) => `CELL_${cell}`;
 
 interface OverlayState {
   ww: number;
   wc: number;
   zoom: number;
   slice: number;
+}
+
+interface CellMeta {
+  patientLabel: string;
+  studyLabel: string;
+  seriesLabel: string;
+  imageCount: number;
 }
 
 function primaryBinding() {
@@ -79,38 +106,108 @@ function toolNameFor(tool: ToolId): string {
   }
 }
 
+const ALL_TOOL_NAMES = [
+  WindowLevelTool.toolName,
+  ZoomTool.toolName,
+  PanTool.toolName,
+  StackScrollTool.toolName,
+  LengthTool.toolName,
+  AngleTool.toolName,
+  EllipticalROITool.toolName,
+  RectangleROITool.toolName,
+  ArrowAnnotateTool.toolName,
+  ProbeTool.toolName,
+];
+
 export default function Viewport() {
-  const containerRef = useRef<HTMLDivElement>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
+  const cellRefs = useRef<Array<HTMLDivElement | null>>([]);
   const engineRef = useRef<RenderingEngine | null>(null);
-  const [ready, setReady] = useState(false);
+  const baselinesRef = useRef<Map<number, number>>(new Map());
+  const loadedSeriesRef = useRef<Map<number, string>>(new Map());
+  const cellMetaRef = useRef<Map<number, { series: SeriesInfo; study: StudyInfo }>>(new Map());
+  const listenersRef = useRef<Map<number, () => void>>(new Map());
 
   const studies = useViewerStore((s) => s.studies);
   const activeStudyUid = useViewerStore((s) => s.activeStudyUid);
   const activeSeriesUid = useViewerStore((s) => s.activeSeriesUid);
   const activeTool = useViewerStore((s) => s.activeTool);
-  const { study, series } = getActiveSeries(studies, activeStudyUid, activeSeriesUid);
+  const layoutId = useViewerStore((s) => s.layoutId);
+  const cellSeries = useViewerStore((s) => s.cellSeries);
+  const activeCell = useViewerStore((s) => s.activeCell);
+  const cinePlaying = useViewerStore((s) => s.cinePlaying);
+  const cineFps = useViewerStore((s) => s.cineFps);
+  const cineDirection = useViewerStore((s) => s.cineDirection);
+  const setActiveCellStore = useViewerStore((s) => s.setActiveCell);
+  const initCinePrefs = useViewerStore((s) => s.initCinePrefs);
 
-  const [overlay, setOverlay] = useState<OverlayState>({
-    ww: 0, wc: 0, zoom: 100, slice: 1,
-  });
-  const overlayRef = useRef(setOverlay);
+  const layout = getLayout(layoutId);
+  const nCells = layout.rows * layout.cols;
+
+  const [ready, setReady] = useState(false);
+  const [overlays, setOverlays] = useState<Record<number, OverlayState>>({});
+  const [cellMeta, setCellMeta] = useState<Record<number, CellMeta>>({});
+
   useEffect(() => {
-    overlayRef.current = setOverlay;
-  }, [setOverlay]);
-  const cleanupRef = useRef<(() => void) | null>(null);
-  const baselineScaleRef = useRef<number | null>(null);
+    initCinePrefs();
+  }, [initCinePrefs]);
 
-  /* ------------------------------------------------ create engine + tools */
+  /* ------------------------- per-cell overlay update ------------------- */
+
+  const updateOverlay = useCallback((cell: number) => {
+    const vp = engineRef.current?.getViewport(viewportIdFor(cell));
+    if (!vp) return;
+    const props = vp.getProperties();
+    const cam = vp.getCamera();
+    const sliceIndex =
+      (vp as { getCurrentImageIdIndex?: () => number }).getCurrentImageIdIndex?.() ?? 0;
+    const baseline = baselinesRef.current.get(cell);
+    const zoom =
+      baseline && cam.parallelScale ? Math.round((baseline / cam.parallelScale) * 100) : 100;
+    setOverlays((prev) => ({
+      ...prev,
+      [cell]: {
+        ww: Math.round((props.voiRange?.upper ?? 0) - (props.voiRange?.lower ?? 0)),
+        wc: Math.round(((props.voiRange?.upper ?? 0) + (props.voiRange?.lower ?? 0)) / 2),
+        zoom,
+        slice: sliceIndex + 1,
+      },
+    }));
+  }, []);
+
+  const attachOverlayListeners = useCallback(
+    (cell: number, el: HTMLElement) => {
+      const onVoi = () => updateOverlay(cell);
+      const onCam = () => updateOverlay(cell);
+      const onNewImage = (evt: Event) => {
+        const detail = (evt as CustomEvent<{ imageIdIndex: number }>).detail;
+        setOverlays((prev) => ({
+          ...prev,
+          [cell]: { ...(prev[cell] ?? { ww: 0, wc: 0, zoom: 100, slice: 1 }), slice: (detail?.imageIdIndex ?? 0) + 1 },
+        }));
+        updateOverlay(cell);
+      };
+      el.addEventListener(Enums.Events.VOI_MODIFIED, onVoi);
+      el.addEventListener(Enums.Events.CAMERA_MODIFIED, onCam);
+      el.addEventListener(Enums.Events.STACK_NEW_IMAGE, onNewImage);
+      listenersRef.current.set(cell, () => {
+        el.removeEventListener(Enums.Events.VOI_MODIFIED, onVoi);
+        el.removeEventListener(Enums.Events.CAMERA_MODIFIED, onCam);
+        el.removeEventListener(Enums.Events.STACK_NEW_IMAGE, onNewImage);
+      });
+    },
+    [updateOverlay]
+  );
+
+  /* ---------------------- engine + toolgroup boot ---------------------- */
+
   useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-
-    let toolGroup: ToolGroupManager.ToolGroupType | null = null;
+    let cancelled = false;
     let engine: RenderingEngine | null = null;
 
     async function boot() {
       await ensureCornerstone();
-      if (containerRef.current !== container) return; // unmounted while initing
+      if (cancelled || !gridRef.current) return;
 
       // v5: register tool classes in the global registry before group addTool
       addTool(WindowLevelTool);
@@ -127,81 +224,27 @@ export default function Viewport() {
       engine = new RenderingEngine(RENDERING_ENGINE_ID);
       engineRef.current = engine;
 
-      engine.enableElement({
-        viewportId: VIEWPORT_ID,
-        type: Enums.ViewportType.STACK,
-        element: container,
-        defaultOptions: { background: [0, 0, 0] as Types.Point3 },
-      });
-
-      const viewport = engine.getViewport(VIEWPORT_ID);
-      registerViewport(viewport);
-
       const tg = ToolGroupManager.createToolGroup(TOOLGROUP_ID);
       if (tg) {
-        tg.addTool(WindowLevelTool.toolName);
-        tg.addTool(ZoomTool.toolName);
-        tg.addTool(PanTool.toolName);
-        // StackScrollTool serves both wheel scrolling and drag scrolling in v5
-        tg.addTool(StackScrollTool.toolName);
-        tg.addTool(LengthTool.toolName);
-        tg.addTool(AngleTool.toolName);
-        tg.addTool(EllipticalROITool.toolName);
-        tg.addTool(RectangleROITool.toolName);
-        tg.addTool(ArrowAnnotateTool.toolName);
-        tg.addTool(ProbeTool.toolName);
-        tg.addViewport(VIEWPORT_ID, RENDERING_ENGINE_ID);
-        toolGroup = tg;
+        for (const name of ALL_TOOL_NAMES) tg.addTool(name);
         registerToolGroup(tg);
       }
 
-      const updateOverlay = () => {
-        const vp = engineRef.current?.getViewport(VIEWPORT_ID);
-        if (!vp) return;
-        const props = vp.getProperties();
-        const cam = vp.getCamera();
-        const sliceIndex =
-          (vp as { getCurrentImageIdIndex?: () => number }).getCurrentImageIdIndex?.() ?? 0;
-        const baseline = baselineScaleRef.current;
-        const zoom =
-          baseline && cam.parallelScale
-            ? Math.round((baseline / cam.parallelScale) * 100)
-            : 100;
-        overlayRef.current((o) => ({
-          ...o,
-          ww: Math.round((props.voiRange?.upper ?? 0) - (props.voiRange?.lower ?? 0)),
-          wc: Math.round(((props.voiRange?.upper ?? 0) + (props.voiRange?.lower ?? 0)) / 2),
-          zoom,
-          slice: sliceIndex + 1,
-        }));
-      };
-
-      const onNewImage = (evt: Event) => {
-        const detail = (evt as CustomEvent<{ imageIdIndex: number }>).detail;
-        overlayRef.current((o) => ({ ...o, slice: (detail?.imageIdIndex ?? 0) + 1 }));
-        updateOverlay();
-      };
-
-      // v5 dispatches viewport events on the ELEMENT, not the global target
-      container.addEventListener(Enums.Events.VOI_MODIFIED, updateOverlay);
-      container.addEventListener(Enums.Events.CAMERA_MODIFIED, updateOverlay);
-      container.addEventListener(Enums.Events.STACK_NEW_IMAGE, onNewImage);
       // debug handle (harmless in prod, used by e2e verification)
       (window as unknown as { __csEventTarget?: unknown }).__csEventTarget = eventTarget;
-      (window as unknown as { __csViewport?: unknown }).__csViewport = viewport;
+      Object.defineProperty(window, "__csViewport", {
+        get: () => getViewport(),
+        configurable: true,
+      });
       (window as unknown as { __csToolGroup?: unknown }).__csToolGroup = tg;
-      cleanupRef.current = () => {
-        container.removeEventListener(Enums.Events.VOI_MODIFIED, updateOverlay);
-        container.removeEventListener(Enums.Events.CAMERA_MODIFIED, updateOverlay);
-        container.removeEventListener(Enums.Events.STACK_NEW_IMAGE, onNewImage);
-      };
+
       setReady(true);
     }
 
     boot();
 
-    // keep the canvas matched to the element size (window resizes, orientation
-    // changes, sidebar toggle)
+    // keep the canvases matched to the element sizes (resizes, orientation
+    // changes, sidebar toggle, layout changes)
     let rafId = 0;
     const ro = new ResizeObserver(() => {
       cancelAnimationFrame(rafId);
@@ -216,46 +259,161 @@ export default function Viewport() {
         }
       });
     });
-    ro.observe(container);
+    if (gridRef.current) ro.observe(gridRef.current);
 
     return () => {
+      cancelled = true;
       setReady(false);
       ro.disconnect();
       cancelAnimationFrame(rafId);
-      cleanupRef.current?.();
-      cleanupRef.current = null;
+      for (const cleanup of listenersRef.current.values()) cleanup();
+      listenersRef.current.clear();
       ToolGroupManager.destroyToolGroup(TOOLGROUP_ID);
       engine?.destroy();
       engineRef.current = null;
-      registerViewport(null);
       registerToolGroup(null);
     };
   }, []);
 
-  /* -------------------------------------------------- react to tool change */
+  /* --------------------- enable/disable tiles per layout ---------------- */
+
+  useEffect(() => {
+    const engine = engineRef.current;
+    const tg = ToolGroupManager.getToolGroup(TOOLGROUP_ID);
+    if (!engine || !tg || !ready) return;
+
+    // enable tiles 0..n-1
+    for (let i = 0; i < nCells; i++) {
+      const el = cellRefs.current[i];
+      const id = viewportIdFor(i);
+      if (!el) continue;
+      const exists = engine
+        .getViewports()
+        .some((v) => (v as unknown as { viewportId: string }).viewportId === id);
+      if (exists) continue;
+      engine.enableElement({
+        viewportId: id,
+        type: Enums.ViewportType.STACK,
+        element: el,
+        defaultOptions: { background: [0, 0, 0] as Types.Point3 },
+      });
+      tg.addViewport(id, RENDERING_ENGINE_ID);
+      const vp = engine.getViewport(id);
+      if (vp) registerViewport(i, vp as Types.IStackViewport, el);
+      attachOverlayListeners(i, el);
+      loadedSeriesRef.current.delete(i); // fresh viewport -> (re)load stack
+    }
+
+    // disable tiles beyond the current layout
+    for (const vp of engine.getViewports()) {
+      const vpId = (vp as unknown as { viewportId: string }).viewportId;
+      const m = /^CELL_(\d+)$/.exec(vpId);
+      const cell = m ? parseInt(m[1], 10) : -1;
+      if (cell >= 0 && cell >= nCells) {
+        (tg as unknown as { removeViewports: (...ids: string[]) => unknown }).removeViewports(vpId);
+        engine.disableElement(vpId);
+        registerViewport(cell, null);
+        listenersRef.current.get(cell)?.();
+        listenersRef.current.delete(cell);
+        loadedSeriesRef.current.delete(cell);
+        cellMetaRef.current.delete(cell);
+        // NB: stale cellMeta/overlays keys for removed tiles are harmless -
+        // those tiles no longer render, and a re-enabled tile reloads its
+        // stack (loadedSeriesRef was cleared) which refreshes the meta.
+      }
+    }
+  }, [ready, nCells, attachOverlayListeners]);
+
+  /* --------------------- resolve series per tile ------------------------ */
+
+  // keep the imperative registry's "active tile" in sync with the React
+  // store - layout changes clamp the store value, and toolbar layout
+  // switches never fire tile pointerdown events.
+  useEffect(() => {
+    setActiveViewportCell(Math.min(activeCell, Math.max(nCells - 1, 0)));
+  }, [activeCell, nCells]);
+
+  const resolved = useMemo(() => {
+    const out: Array<{ cell: number; series: SeriesInfo | null; study: StudyInfo | null }> = [];
+    for (let i = 0; i < nCells; i++) {
+      const uid = cellSeries[i] ?? (i === 0 ? activeSeriesUid : null);
+      const { series, study } = findSeriesAnywhere(studies, uid);
+      out.push({ cell: i, series, study });
+    }
+    return out;
+  }, [studies, cellSeries, activeSeriesUid, nCells]);
+
+  /* ------------------------ load stacks into tiles ---------------------- */
+
+  useEffect(() => {
+    if (!ready) return;
+    let cancelled = false;
+
+    async function loadAll() {
+      for (const r of resolved) {
+        if (cancelled) return;
+        if (!r.series || r.series.imageIds.length === 0) continue;
+        const loaded = loadedSeriesRef.current.get(r.cell);
+        if (loaded === r.series.seriesUid) continue;
+        const vp = engineRef.current?.getViewport(viewportIdFor(r.cell)) as
+          | Types.IStackViewport
+          | undefined;
+        if (!vp) continue;
+
+        await vp.setStack(r.series.imageIds, 0);
+        // apply the series' embedded default window (falls back to a CT default)
+        const ww = r.series.defaultWindowWidth ?? 1600;
+        const wc = r.series.defaultWindowCenter ?? 400;
+        vp.setProperties({ voiRange: { lower: wc - ww / 2, upper: wc + ww / 2 } });
+        // record the fit baseline for the zoom % readout, then fit
+        vp.resetCamera();
+        baselinesRef.current.set(r.cell, vp.getCamera().parallelScale || 0);
+        loadedSeriesRef.current.set(r.cell, r.series.seriesUid);
+        if (r.study) {
+          cellMetaRef.current.set(r.cell, { series: r.series, study: r.study });
+          setCellMeta((prev) => ({
+            ...prev,
+            [r.cell]: {
+              patientLabel: `${r.study!.patientName}  |  ${r.study!.patientId}`,
+              studyLabel: `${r.study!.studyDescription}  ${r.study!.studyDate}`,
+              seriesLabel: `${r.series!.modality} - ${r.series!.description}`,
+              imageCount: r.series!.imageIds.length,
+            },
+          }));
+        }
+        // preload neighbouring slices so wheel/scrolling feels instant
+        const el = cellRefs.current[r.cell];
+        if (el) {
+          try {
+            utilities.stackPrefetch.enable(el);
+          } catch {
+            /* prefetch is best-effort */
+          }
+        }
+        vp.render();
+        updateOverlay(r.cell);
+      }
+    }
+
+    loadAll();
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, resolved, updateOverlay]);
+
+  /* --------------------------- tool activation -------------------------- */
+
   useEffect(() => {
     const tg = ToolGroupManager.getToolGroup(TOOLGROUP_ID);
     if (!tg) return;
 
-    const allTools = [
-      WindowLevelTool.toolName,
-      ZoomTool.toolName,
-      PanTool.toolName,
-      StackScrollTool.toolName,
-      LengthTool.toolName,
-      AngleTool.toolName,
-      EllipticalROITool.toolName,
-      RectangleROITool.toolName,
-      ArrowAnnotateTool.toolName,
-      ProbeTool.toolName,
-    ];
     const target = toolNameFor(activeTool);
     // v5: setToolPassive only strips exact PRIMARY_BINDINGS shapes; pass
     // removeAllBindings so previously-bound tools fully demote.
     const demote = (name: string) =>
       tg.setToolPassive(name, { removeAllBindings: true } as never);
 
-    for (const name of allTools) {
+    for (const name of ALL_TOOL_NAMES) {
       if (name === target) {
         if (name === StackScrollTool.toolName) {
           // active drag scroll + wheel scroll simultaneously
@@ -287,69 +445,106 @@ export default function Viewport() {
     }
   }, [activeTool, ready, activeSeriesUid]);
 
-  /* --------------------------------------------------- react to series load */
-  useEffect(() => {
-    async function loadStack() {
-      const vp = engineRef.current?.getViewport(VIEWPORT_ID);
-      if (!vp || !series || series.imageIds.length === 0) return;
-      await (vp as Types.IStackViewport).setStack(series.imageIds, 0);
-      // apply the series' embedded default window (falls back to a CT default)
-      const ww = series.defaultWindowWidth ?? 1600;
-      const wc = series.defaultWindowCenter ?? 400;
-      vp.setProperties({ voiRange: { lower: wc - ww / 2, upper: wc + ww / 2 } });
-      // record the fit baseline for the zoom % readout, then fit
-      vp.resetCamera();
-      baselineScaleRef.current = vp.getCamera().parallelScale || null;
-      // preload neighbouring slices so wheel/scrolling feels instant
-      try {
-        utilities.stackPrefetch.enable(containerRef.current as HTMLElement);
-      } catch {
-        /* prefetch is best-effort */
-      }
-      vp.render();
-      overlayRef.current((o) => ({
-        ...o,
-        slice: 1,
-        ww: Math.round(ww),
-        wc: Math.round(wc),
-      }));
-    }
-    loadStack();
-  }, [series?.seriesUid, series?.instanceCount]);
+  /* -------------------------------- cine -------------------------------- */
 
-  const patientLabel = study ? `${study.patientName}  |  ${study.patientId}` : "";
-  const studyLabel = study ? `${study.studyDescription}  ${study.studyDate}` : "";
-  const seriesLabel = series ? `${series.modality} - ${series.description}` : "";
+  useEffect(() => {
+    if (!cinePlaying || !ready) return;
+    let raf = 0;
+    let last = 0;
+    let dir = cineDirection === "backward" ? -1 : 1;
+
+    const step = (t: number) => {
+      raf = requestAnimationFrame(step);
+      if (t - last < 1000 / cineFps) return;
+      last = t;
+
+      const vp = getViewport() as StackViewport | null; // active tile
+      if (!vp) return;
+      const meta = cellMetaRef.current.get(getActiveCell());
+      const count = meta?.series.imageIds.length ?? 0;
+      if (count < 2) return;
+
+      const idx =
+        (vp as unknown as { getCurrentImageIdIndex?: () => number }).getCurrentImageIdIndex?.() ?? 0;
+      if (cineDirection === "oscillate") {
+        const next = idx + dir;
+        if (next < 0 || next > count - 1) dir = -dir;
+      }
+      vp.scroll(dir);
+    };
+
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [cinePlaying, cineFps, cineDirection, ready, activeCell]);
+
+  /* ------------------------------ render -------------------------------- */
+
+  const activateCell = (i: number) => {
+    setActiveCellStore(i);
+    setActiveViewportCell(i);
+  };
 
   return (
-    <div className="relative h-full w-full bg-black">
+    <div className="h-full w-full bg-zinc-950">
       <div
-        ref={containerRef}
-        data-viewport-uid={VIEWPORT_ID}
-        className="h-full w-full touch-none select-none"
-        onContextMenu={(e) => e.preventDefault()}
-      />
+        ref={gridRef}
+        className="grid h-full w-full gap-px bg-zinc-900"
+        style={{
+          gridTemplateColumns: `repeat(${layout.cols}, minmax(0, 1fr))`,
+          gridTemplateRows: `repeat(${layout.rows}, minmax(0, 1fr))`,
+        }}
+      >
+        {Array.from({ length: nCells }, (_, i) => {
+          const meta = cellMeta[i];
+          const ov = overlays[i];
+          return (
+            <div
+              key={i}
+              data-cell-index={i}
+              className="relative min-h-0 min-w-0 overflow-hidden bg-black"
+              onPointerDown={() => activateCell(i)}
+            >
+              <div
+                ref={(el) => {
+                  cellRefs.current[i] = el;
+                }}
+                data-viewport-uid={viewportIdFor(i)}
+                className="h-full w-full touch-none select-none"
+                onContextMenu={(e) => e.preventDefault()}
+              />
 
-      {series && (
-        <>
-          <div className="pointer-events-none absolute left-2 top-2 text-[11px] leading-4 text-teal-300/90 sm:text-xs sm:leading-5">
-            <div className="font-medium text-teal-200">{patientLabel}</div>
-            <div className="text-zinc-400">{studyLabel}</div>
-          </div>
-          <div className="pointer-events-none absolute right-2 top-2 text-right text-[11px] leading-4 text-teal-300/90 sm:text-xs sm:leading-5">
-            <div>WW {overlay.ww} / WC {overlay.wc}</div>
-            <div className="text-zinc-400">{overlay.zoom}%</div>
-          </div>
-          <div className="pointer-events-none absolute bottom-2 left-2 text-[11px] leading-4 text-zinc-400 sm:text-xs sm:leading-5">
-            <div>{seriesLabel}</div>
-          </div>
-          <div className="pointer-events-none absolute bottom-2 right-2 text-right text-[11px] leading-4 text-teal-300/90 sm:text-xs sm:leading-5">
-            <div>Img {overlay.slice} / {series.imageIds.length}</div>
-          </div>
-        </>
-      )}
+              {meta && (
+                <>
+                  <div className="pointer-events-none absolute left-2 top-2 text-[11px] leading-4 text-teal-300/90 sm:text-xs sm:leading-5">
+                    <div className="font-medium text-teal-200">{meta.patientLabel}</div>
+                    <div className="truncate text-zinc-400">{meta.studyLabel}</div>
+                  </div>
+                  <div className="pointer-events-none absolute right-2 top-2 text-right text-[11px] leading-4 text-teal-300/90 sm:text-xs sm:leading-5">
+                    <div>
+                      WW {ov?.ww ?? 0} / WC {ov?.wc ?? 0}
+                    </div>
+                    <div className="text-zinc-400">{ov?.zoom ?? 100}%</div>
+                  </div>
+                  <div className="pointer-events-none absolute bottom-2 left-2 text-[11px] leading-4 text-zinc-400 sm:text-xs sm:leading-5">
+                    <div className="max-w-[60%] truncate">{meta.seriesLabel}</div>
+                  </div>
+                  <div className="pointer-events-none absolute bottom-2 right-2 text-right text-[11px] leading-4 text-teal-300/90 sm:text-xs sm:leading-5">
+                    <div>
+                      Img {ov?.slice ?? 1} / {meta.imageCount}
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {i === activeCell && nCells > 1 && (
+                <div className="pointer-events-none absolute inset-0 ring-2 ring-inset ring-teal-400/70" />
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
-export { VIEWPORT_ID, RENDERING_ENGINE_ID };
+export { RENDERING_ENGINE_ID, viewportIdFor };

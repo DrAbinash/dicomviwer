@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { startRetrieve, OrthancError, type RetrieveMethod } from "@/lib/server/orthanc";
+import { requireSession } from "@/lib/server/auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -16,6 +17,8 @@ export const runtime = "nodejs";
  *    PACS must have this viewer's AE Title + IP + port registered.
  */
 export async function POST(req: NextRequest) {
+  const denied = await requireSession(req);
+  if (denied) return denied;
   let body: Record<string, unknown>;
   try {
     body = (await req.json()) as Record<string, unknown>;

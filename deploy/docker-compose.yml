@@ -1,9 +1,16 @@
-# DICOM Viewer - Synology deployment stack
+# DICOM Viewer - Synology deployment stack (Phase 2)
 # Tested target: Synology DSM 7.2+ with Container Manager.
+#
+# Services:
+#   viewer      Next.js DICOM viewer (login, layouts, cine, Settings UI)
+#   orthanc     DICOM gateway / cache (DICOMweb + SCU/SCP, modality registry)
+#   auto-puller polls modalities (C-FIND) and pulls missing studies (C-MOVE)
+#   caddy       HTTPS reverse proxy - the only exposed entry (80/443)
 #
 # Usage (Container Manager):
 #   1. Copy this folder to a share on the NAS (e.g. /docker/dicomviewer).
-#   2. Create the .env file from .env.example and fill in the secrets.
+#   2. Create the .env file from .env.example and fill in the secrets
+#      (CHANGE THE DEFAULT VIEWER LOGIN!).
 #   3. Container Manager -> Project -> Create -> select docker-compose.yml
 #      -> use the deploy folder as source -> Build.
 #
@@ -11,9 +18,9 @@
 #   cp .env.example .env  # edit values
 #   docker compose up -d --build
 #
-# The stack exposes ONLY Caddy (80/443). The viewer and Orthanc stay on the
-# internal compose network; the browser reaches Orthanc exclusively through
-# the viewer's /api/pacs proxy.
+# The stack exposes ONLY Caddy (80/443). The viewer, Orthanc and the
+# auto-puller stay on the internal compose network; the browser reaches
+# Orthanc exclusively through the viewer's /api/pacs proxy.
 
 services:
   viewer:
@@ -27,7 +34,14 @@ services:
       ORTHANC_PASSWORD: ${ORTHANC_PASSWORD}
       # Default AE Title of this viewer's gateway (C-MOVE target);
       # can be overridden later in the viewer Settings UI.
-      GATEWAY_AET: ${ORTHANC_AE_TITLE:-SYNOLOGYVIEWER}
+      GATEWAY_AET: ${ORTHANC_AE_TITLE:-ORTHANC2}
+      # ---- viewer login (CHANGE THESE IN .env) ----
+      AUTH_USERNAME: ${AUTH_USERNAME:-admin}
+      AUTH_PASSWORD: ${AUTH_PASSWORD:-admin}
+      # Session signing secret - generate once, keep stable across restarts
+      AUTH_SECRET: ${AUTH_SECRET:-}
+      # Shared secret the auto-puller must send to write its heartbeat
+      AUTO_PULL_TOKEN: ${AUTO_PULL_TOKEN:-}
       NODE_ENV: production
       PORT: 3000
     depends_on:
@@ -37,23 +51,54 @@ services:
 
   orthanc:
     image: orthancteam/orthanc:24.10.2
-    # Uncomment to expose the DICOM port to the NAS network so a remote PACS
-    # can C-STORE into this cache (or when this NAS itself must be a move
-    # destination for another device):
+    # Uncomment to expose the DICOM port to the NAS network so modalities can
+    # C-STORE into this gateway (required when remote PACS must reach this
+    # gateway as a C-MOVE destination - i.e. classic move-based pulls):
     # ports:
     #   - "4242:4242"
     volumes:
       - orthanc-data:/var/lib/orthanc/db
     command: /etc/orthanc/orthanc.json
     environment:
-      ORTHANC_NAME: ${ORTHANC_AE_TITLE}
+      ORTHANC_NAME: ${ORTHANC_NAME:-CareDiagnostics}
+      # AE title of this gateway - remote PACS reference it as move target
+      ORTHANC__DICOM_AET: ${ORTHANC_AE_TITLE:-ORTHANC2}
       ORTHANC_USERNAME: ${ORTHANC_USER}
       ORTHANC_PASSWORD: ${ORTHANC_PASSWORD}
-    # The JSON config in orthanc.json reads remote PACS nodes from the
-    # "DicomModalities" section - edit it for your site (AE title, host, port).
+    # The JSON config in orthanc.json seeds the site's PACS nodes
+    # ("DicomModalities"). After first start they live in Orthanc's database
+    # and are managed from the viewer Settings UI (IP / AE Title / port).
     configs:
       - source: orthanc_config
         target: /etc/orthanc/orthanc.json
+    restart: unless-stopped
+    networks: [dicom]
+
+  auto-puller:
+    build:
+      context: ./auto-puller
+      dockerfile: Dockerfile
+    environment:
+      ORTHANC_URL: http://orthanc:8042
+      ORTHANC_USERNAME: ${ORTHANC_USER}
+      ORTHANC_PASSWORD: ${ORTHANC_PASSWORD}
+      # C-MOVE target = this gateway's AE title (same as ORTHANC__DICOM_AET)
+      TARGET_AET: ${ORTHANC_AE_TITLE:-ORTHANC2}
+      # Which modalities to poll and at what pace:
+      #   MODALITIES=UIH_MRI:on,CT_MACHINE:on,XRAY_1:off
+      #   empty = every modality registered on Orthanc
+      MODALITIES: ${AUTO_PULL_MODALITIES:-}
+      POLL_INTERVAL_SECONDS: ${AUTO_PULL_INTERVAL:-300}
+      LOOKBACK_DAYS: ${AUTO_PULL_LOOKBACK_DAYS:-1}
+      MAX_RETRIEVES_PER_CYCLE: ${AUTO_PULL_MAX_RETRIEVES:-20}
+      FAIL_COOLDOWN_MINUTES: ${AUTO_PULL_COOLDOWN:-30}
+      # write activity into the viewer UI (Settings -> Auto-Pull)
+      HEARTBEAT_URL: http://viewer:3000/api/auto-pull/heartbeat
+      HEARTBEAT_TOKEN: ${AUTO_PULL_TOKEN:-}
+      LOG_LEVEL: ${AUTO_PULL_LOG_LEVEL:-INFO}
+    depends_on:
+      - orthanc
+      - viewer
     restart: unless-stopped
     networks: [dicom]
 
@@ -64,6 +109,7 @@ services:
       - "443:443"
     environment:
       VIEWER_UPSTREAM: viewer:3000
+      ACME_HOSTNAME: ${ACME_HOSTNAME:-localhost}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data

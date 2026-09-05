@@ -305,3 +305,59 @@ export async function pollRetrieveJob(jobId: string): Promise<RetrieveJobStatus>
   const res = await fetch(`/api/dicom/jobs/${encodeURIComponent(jobId)}`);
   return jsonOrError<RetrieveJobStatus>(res, "Job polling failed");
 }
+
+/* ------------------------------------------------------------------ */
+/* Phase 2: security (change login) + auto-pull monitoring             */
+/* ------------------------------------------------------------------ */
+
+export async function updateCredentials(input: {
+  currentPassword: string;
+  newUsername?: string;
+  newPassword?: string;
+}): Promise<{ ok: boolean; username: string }> {
+  const res = await fetch("/api/auth/credentials", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return jsonOrError(res, "Failed to update credentials");
+}
+
+export interface AutoPullEventInfo {
+  id: string;
+  sourceAet: string;
+  studyUid: string;
+  patientName: string;
+  patientId: string;
+  studyDescription: string;
+  accessionNumber: string;
+  action: "pulled" | "skipped" | "failed" | string;
+  detail: string;
+  createdAt: string;
+}
+
+export interface AutoPullCycle {
+  status: string;
+  startedAt: string;
+  finishedAt: string;
+  pollIntervalSeconds: number;
+  lookbackDays: number;
+  targetAet: string;
+  modalities: Array<{ name: string; enabled: boolean; error: string }>;
+  eventCount: number;
+  pulled: number;
+  skipped: number;
+  failed: number;
+}
+
+export interface AutoPullStatus {
+  lastHeartbeatAt: string | null;
+  lastCycle: AutoPullCycle | null;
+  events: AutoPullEventInfo[];
+  tokenProtected: boolean;
+}
+
+export async function getAutoPullStatus(): Promise<AutoPullStatus> {
+  const res = await fetch("/api/auto-pull");
+  return jsonOrError<AutoPullStatus>(res, "Failed to load auto-pull status");
+}

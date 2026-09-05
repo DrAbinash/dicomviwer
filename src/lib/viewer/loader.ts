@@ -61,11 +61,11 @@ function getString(ds: dicomParser.DataSet, tag: string): string {
 
 function getFloat(ds: dicomParser.DataSet, tag: string): number | null {
   try {
-    const v = ds.floatString(tag);
+    const v = ds.floatString(tag) ?? NaN;
     return Number.isFinite(v) ? v : null;
   } catch {
     try {
-      const i = ds.intString(tag);
+      const i = ds.intString(tag) ?? NaN;
       return Number.isFinite(i) ? i : null;
     } catch {
       return null;

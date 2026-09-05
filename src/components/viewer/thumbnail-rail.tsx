@@ -131,7 +131,7 @@ export default function ThumbnailRail() {
   const activeStudyUid = useViewerStore((s) => s.activeStudyUid);
   const activeSeriesUid = useViewerStore((s) => s.activeSeriesUid);
   const setActiveStudy = useViewerStore((s) => s.setActiveStudy);
-  const setActiveSeries = useViewerStore((s) => s.setActiveSeries);
+  const assignSeriesToActiveCell = useViewerStore((s) => s.assignSeriesToActiveCell);
 
   return (
     <div className="flex h-full w-full flex-col gap-3 overflow-y-auto p-2 [scrollbar-width:thin]">
@@ -167,12 +167,18 @@ export default function ThumbnailRail() {
                 active={s.seriesUid === activeSeriesUid}
                 onClick={() => {
                   setActiveStudy(study.studyUid);
-                  setActiveSeries(s.seriesUid);
+                  // RadiAnt-style: the thumbnail loads into the selected tile
+                  assignSeriesToActiveCell(s.seriesUid);
                 }}
               />
             ))}
         </div>
       ))}
+      {studies.length > 0 && (
+        <div className="px-2 text-[10px] leading-3.5 text-zinc-600">
+          Series open in the selected tile.
+        </div>
+      )}
     </div>
   );
 }

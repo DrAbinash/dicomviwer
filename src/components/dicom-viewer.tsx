@@ -5,9 +5,10 @@
  * Header actions, thumbnail rail, viewport, toolbar, PACS dialog.
  * Files come from: drag & drop, file picker, bundled sample study, or PACS.
  */
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { Settings as SettingsIcon } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Settings as SettingsIcon, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useViewerStore } from "@/lib/viewer/store";
 import {
@@ -32,6 +33,39 @@ const PacsDialog = dynamic(() => import("./viewer/pacs-dialog"), { ssr: false })
 const SettingsDialog = dynamic(() => import("./viewer/settings-dialog"), { ssr: false });
 
 const SAMPLE_COUNT = 30;
+
+/** Signed-in user chip (Phase 2 login). Loads once; logout clears session. */
+function UserChip() {
+  const router = useRouter();
+  const [username, setUsername] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/auth/session")
+      .then((r) => r.json())
+      .then((d: { authenticated?: boolean; username?: string | null }) => {
+        if (d.authenticated) setUsername(d.username ?? "user");
+      })
+      .catch(() => {
+        /* middleware will redirect on next navigation anyway */
+      });
+  }, []);
+
+  if (!username) return null;
+  return (
+    <button
+      title={`Signed in as ${username} — click to log out`}
+      onClick={async () => {
+        await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+        router.replace("/login");
+        router.refresh();
+      }}
+      className="inline-flex h-8 items-center gap-1 rounded border border-zinc-700 px-2 text-xs text-zinc-300 hover:bg-zinc-800"
+    >
+      <LogOut className="h-3.5 w-3.5" />
+      <span className="hidden max-w-[10ch] truncate sm:inline">{username}</span>
+    </button>
+  );
+}
 
 export default function DicomViewer() {
   const addStudies = useViewerStore((s) => s.addStudies);
@@ -157,7 +191,7 @@ export default function DicomViewer() {
             DICOM<span className="text-zinc-200">Viewer</span>
           </span>
           <span className="hidden text-[10px] text-zinc-600 sm:inline">
-            v0.2 · Cornerstone3D
+            v0.3 · Cornerstone3D
           </span>
         </div>
 
@@ -202,12 +236,13 @@ export default function DicomViewer() {
             size="sm"
             variant="outline"
             onClick={() => setSettingsOpen(true)}
-            title="Settings — gateway & PACS servers"
+            title="Settings — gateway, PACS servers, security, auto-pull"
             className="h-8 border-zinc-700 px-2 text-xs text-zinc-300 hover:bg-zinc-800 sm:px-3"
           >
             <SettingsIcon className="h-3.5 w-3.5 sm:mr-1" />
             <span className="hidden sm:inline">Settings</span>
           </Button>
+          <UserChip />
         </div>
       </header>
 
