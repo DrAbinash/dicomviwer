@@ -7,6 +7,7 @@
  */
 import { useCallback, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import { Settings as SettingsIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useViewerStore } from "@/lib/viewer/store";
 import {
@@ -28,6 +29,7 @@ const Viewport = dynamic(() => import("./viewer/viewport"), {
 const ThumbnailRail = dynamic(() => import("./viewer/thumbnail-rail"), { ssr: false });
 const Toolbar = dynamic(() => import("./viewer/toolbar"), { ssr: false });
 const PacsDialog = dynamic(() => import("./viewer/pacs-dialog"), { ssr: false });
+const SettingsDialog = dynamic(() => import("./viewer/settings-dialog"), { ssr: false });
 
 const SAMPLE_COUNT = 30;
 
@@ -43,6 +45,7 @@ export default function DicomViewer() {
   const studyCount = useViewerStore((s) => s.studies.length);
 
   const [pacsOpen, setPacsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -154,7 +157,7 @@ export default function DicomViewer() {
             DICOM<span className="text-zinc-200">Viewer</span>
           </span>
           <span className="hidden text-[10px] text-zinc-600 sm:inline">
-            v0.1 · Cornerstone3D
+            v0.2 · Cornerstone3D
           </span>
         </div>
 
@@ -194,6 +197,16 @@ export default function DicomViewer() {
             className="h-8 bg-teal-600 px-2 text-xs text-white hover:bg-teal-500 sm:px-3"
           >
             PACS
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setSettingsOpen(true)}
+            title="Settings — gateway & PACS servers"
+            className="h-8 border-zinc-700 px-2 text-xs text-zinc-300 hover:bg-zinc-800 sm:px-3"
+          >
+            <SettingsIcon className="h-3.5 w-3.5 sm:mr-1" />
+            <span className="hidden sm:inline">Settings</span>
           </Button>
         </div>
       </header>
@@ -276,7 +289,12 @@ export default function DicomViewer() {
         onOpenChange={setPacsOpen}
         onFiles={ingestFiles}
         onProgress={(p) => setLoading({ active: p.total > 0, label: `Retrieving ${p.label}…`, done: p.done, total: p.total })}
+        onOpenSettings={() => {
+          setPacsOpen(false);
+          setSettingsOpen(true);
+        }}
       />
+      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
     </div>
   );
 }

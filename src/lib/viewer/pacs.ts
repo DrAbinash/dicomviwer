@@ -161,3 +161,147 @@ function formatDicomDate(raw: string): string {
   if (!/^\d{8}$/.test(raw)) return raw;
   return `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`;
 }
+
+/* ------------------------------------------------------------------ */
+/* Settings & remote PACS query (user-added servers, see Settings UI)  */
+/* ------------------------------------------------------------------ */
+
+export interface PacsServerInfo {
+  id: string;
+  name: string;
+  aeTitle: string;
+  host: string;
+  port: number;
+  notes?: string | null;
+  lastStatus?: string | null;
+  lastTestAt?: string | null;
+}
+
+export interface GatewayInfo {
+  configured: boolean;
+  url: string;
+  username: string;
+  gatewayAet: string;
+  source: "db" | "env" | null;
+  reachable: boolean;
+  system: {
+    name: string;
+    version: string;
+    dicomAet: string;
+    dicomPort: number | null;
+  } | null;
+  error: string | null;
+  modalities: Array<{ id: string; aet: string; host: string; port: number }>;
+}
+
+async function jsonOrError<T>(res: Response, fallback: string): Promise<T> {
+  const body = (await res.json().catch(() => null)) as { error?: string } | null;
+  if (!res.ok) throw new Error(body?.error || `${fallback} (${res.status})`);
+  return body as T;
+}
+
+export async function listServers(): Promise<PacsServerInfo[]> {
+  const res = await fetch("/api/pacs-servers");
+  const data = await jsonOrError<{ servers: PacsServerInfo[] }>(res, "Failed to load PACS servers");
+  return data.servers;
+}
+
+export async function createServer(input: Omit<PacsServerInfo, "id">): Promise<{ registered: boolean; registeredError?: string }> {
+  const res = await fetch("/api/pacs-servers", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const data = await jsonOrError<{ registered: boolean; registeredError?: string }>(
+    res,
+    "Failed to add PACS server"
+  );
+  return { registered: data.registered, registeredError: data.registeredError };
+}
+
+export async function updateServer(id: string, input: Omit<PacsServerInfo, "id">): Promise<{ registered: boolean; registeredError?: string }> {
+  const res = await fetch(`/api/pacs-servers/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const data = await jsonOrError<{ registered: boolean; registeredError?: string }>(
+    res,
+    "Failed to update PACS server"
+  );
+  return { registered: data.registered, registeredError: data.registeredError };
+}
+
+export async function deleteServer(id: string): Promise<void> {
+  const res = await fetch(`/api/pacs-servers/${id}`, { method: "DELETE" });
+  await jsonOrError<{ ok: boolean }>(res, "Failed to delete PACS server");
+}
+
+export async function testServer(id: string): Promise<{ ok: boolean; ms?: number; error?: string }> {
+  const res = await fetch(`/api/pacs-servers/${id}/test`, { method: "POST" });
+  return jsonOrError<{ ok: boolean; ms?: number; error?: string }>(res, "C-ECHO failed");
+}
+
+export async function getGatewayInfo(): Promise<GatewayInfo> {
+  const res = await fetch("/api/gateway");
+  return jsonOrError<GatewayInfo>(res, "Failed to load gateway status");
+}
+
+export async function saveGatewaySettings(input: {
+  url: string;
+  username: string;
+  password?: string;
+  gatewayAet: string;
+}): Promise<{ ok: boolean; reachable: boolean; system: GatewayInfo["system"]; error: string | null }> {
+  const res = await fetch("/api/gateway", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return jsonOrError(res, "Failed to save gateway settings");
+}
+
+export interface RemoteQueryFilters {
+  patientName?: string;
+  patientId?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  modality?: string;
+}
+
+/** C-FIND study query against a user-added remote PACS (via the gateway SCU). */
+export async function findOnRemote(serverId: string, filters: RemoteQueryFilters): Promise<PacsStudy[]> {
+  const res = await fetch("/api/dicom/find", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ serverId, ...filters }),
+  });
+  const data = await jsonOrError<{ studies: PacsStudy[] }>(res, "Remote C-FIND failed");
+  return data.studies;
+}
+
+export interface RetrieveJobStatus {
+  state: string;
+  progress: number;
+  errorCode: number;
+  errorDescription: string;
+}
+
+export async function startRetrieve(
+  serverId: string,
+  studyUid: string,
+  method: "cget" | "cmove" = "cget"
+): Promise<string> {
+  const res = await fetch("/api/dicom/retrieve", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ serverId, studyUid, method }),
+  });
+  const data = await jsonOrError<{ jobId: string }>(res, "Retrieve failed to start");
+  return data.jobId;
+}
+
+export async function pollRetrieveJob(jobId: string): Promise<RetrieveJobStatus> {
+  const res = await fetch(`/api/dicom/jobs/${encodeURIComponent(jobId)}`);
+  return jsonOrError<RetrieveJobStatus>(res, "Job polling failed");
+}

@@ -11,6 +11,9 @@
     "REMOTEPACS": ["REMOTEPACS", "192.168.1.100", 4242]
   },
 
+  "_Comment": "PACS servers added in the viewer Settings UI are registered here at runtime (REST PUT /modalities). The static REMOTEPACS entry is imported once at first start.",
+  "DicomModalitiesInDatabase": true,
+
   "DicomScpEnabled": true,
   "DicomScuEnabled": true,
 

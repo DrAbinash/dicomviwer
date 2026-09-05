@@ -25,6 +25,9 @@ services:
       ORTHANC_URL: http://orthanc:8042
       ORTHANC_USERNAME: ${ORTHANC_USER}
       ORTHANC_PASSWORD: ${ORTHANC_PASSWORD}
+      # Default AE Title of this viewer's gateway (C-MOVE target);
+      # can be overridden later in the viewer Settings UI.
+      GATEWAY_AET: ${ORTHANC_AE_TITLE:-SYNOLOGYVIEWER}
       NODE_ENV: production
       PORT: 3000
     depends_on:
