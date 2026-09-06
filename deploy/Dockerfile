@@ -15,13 +15,22 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN bun run build
 # Seed SQLite schema into a template DB that the runner copies to /app/db
 # on first boot (fresh volume) - after that the volume owns the data.
-RUN DATABASE_URL="file:../db-seed/custom.db" bunx prisma db push --accept-data-loss --skip-generate
+# ABSOLUTE file: URL on purpose: the Prisma engine resolves relative SQLite
+# paths against the process CWD, and relative URLs are what broke the
+# first revision of this image (seed landed in /db-seed, runtime looked
+# for /db/custom.db instead of /app/db/custom.db).
+RUN DATABASE_URL="file:/app/db-seed/custom.db" bunx prisma db push --accept-data-loss --skip-generate
 
 FROM oven/bun:1.2-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
+# The image ships without a .env file (.dockerignore excludes it), so the
+# runtime DATABASE_URL MUST be baked here. Absolute path -> the volume that
+# is mounted at /app/db. .env files, when present next to the server (source
+# checkout), are auto-loaded by Bun but never override a real env var.
+ENV DATABASE_URL="file:/app/db/custom.db"
 RUN groupadd --system --gid 1001 nodejs && useradd --system --uid 1001 --gid nodejs nextjs
 
 COPY --from=builder /app/.next/standalone ./

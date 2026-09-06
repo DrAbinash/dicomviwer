@@ -30,6 +30,10 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
     environment:
+      # SQLite lives in the viewer-data volume mounted at /app/db. Absolute
+      # URL: the Prisma engine resolves relative paths against the process
+      # CWD, which would land on /db (root) instead of the volume.
+      DATABASE_URL: file:/app/db/custom.db
       # Orthanc is reachable inside the compose network
       ORTHANC_URL: http://orthanc:8042
       ORTHANC_USERNAME: ${ORTHANC_USER}

@@ -121,7 +121,10 @@ export interface ListenerConfig {
 const DEFAULT_LISTENER: ListenerConfig = {
   enabled: false,
   aeTitle: "DICOMVIEWER",
-  port: 4104,
+  // Deployment can pin the listening port via DVV_LISTEN_PORT (docker-compose
+  // maps "${DVV_LISTEN_PORT}:${DVV_LISTEN_PORT}"); the Settings UI value
+  // (AppSetting) always wins once the user saves it.
+  port: Number(process.env.DVV_LISTEN_PORT) > 0 ? Number(process.env.DVV_LISTEN_PORT) : 4104,
   forwardToGateway: true,
 };
 
