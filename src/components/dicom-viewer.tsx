@@ -28,6 +28,14 @@ const Viewport = dynamic(() => import("./viewer/viewport"), {
     </div>
   ),
 });
+const ViewportMpr = dynamic(() => import("./viewer/viewport-mpr"), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-full w-full items-center justify-center bg-black text-xs text-zinc-600">
+      initialising MPR…
+    </div>
+  ),
+});
 const ThumbnailRail = dynamic(() => import("./viewer/thumbnail-rail"), { ssr: false });
 const Toolbar = dynamic(() => import("./viewer/toolbar"), { ssr: false });
 const PacsDialog = dynamic(() => import("./viewer/pacs-dialog"), { ssr: false });
@@ -79,6 +87,7 @@ export default function DicomViewer() {
   const setError = useViewerStore((s) => s.setError);
   const sidebarOpen = useViewerStore((s) => s.sidebarOpen);
   const toggleSidebar = useViewerStore((s) => s.toggleSidebar);
+  const layoutId = useViewerStore((s) => s.layoutId);
   const studyCount = useViewerStore((s) => s.studies.length);
 
   const [pacsOpen, setPacsOpen] = useState(false);
@@ -286,7 +295,7 @@ export default function DicomViewer() {
 
         {/* viewport */}
         <main className="relative min-w-0 flex-1">
-          <Viewport />
+          {layoutId === "mpr" ? <ViewportMpr /> : <Viewport />}
           <AnnotationsPanel />
 
           {/* empty state */}

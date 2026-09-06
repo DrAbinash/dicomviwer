@@ -9,11 +9,20 @@
  * Layouts/presets/shortcuts are all data-driven - adding an entry in
  * lib/viewer/{layouts,preferences,shortcuts} makes it show up here.
  */
-import { useEffect, useState } from "react";
-import { cellCount, useViewerStore, type ToolId } from "@/lib/viewer/store";
+import { useEffect, useRef, useState } from "react";
+import { cellCount, useViewerStore, findSeriesAnywhere, type ToolId } from "@/lib/viewer/store";
 import { viewerActions } from "@/lib/viewer/api";
 import { LAYOUTS } from "@/lib/viewer/layouts";
+import {
+  gsps,
+  saveAnnotations,
+  fetchSavedAnnotations,
+  deleteSavedAnnotations,
+  invalidateGspsCache,
+  importMeasurements,
+} from "@/lib/viewer/gsps";
 import { cn } from "@/lib/utils";
+import SendDialog from "./send-dialog";
 
 const TOOLS: Array<{ id: ToolId; label: string; glyph: string; title: string }> = [
   { id: "windowlevel", label: "W/L", glyph: "◐", title: "Window/Level (drag)" },
@@ -69,6 +78,7 @@ export default function Toolbar() {
   const toggleInterpolation = useViewerStore((s) => s.toggleInterpolation);
   const toggleAnnotations = useViewerStore((s) => s.toggleAnnotations);
   const setHelpOpen = useViewerStore((s) => s.setHelpOpen);
+  const activeSeriesUid = useViewerStore((s) => s.activeSeriesUid);
 
   const [isFullscreen, setIsFullscreen] = useState(false);
   useEffect(() => {
@@ -95,8 +105,76 @@ export default function Toolbar() {
     });
   };
 
+  /* -------------------- measurement persistence (Phase 3) --------------- */
+  const [toast, setToast] = useState<string | null>(null);
+  const [sendOpen, setSendOpen] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showFlash = (msg: string) => {
+    setToast(msg);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 2600);
+  };
+
+  const activeSeries = findSeriesAnywhere(
+    useViewerStore.getState().studies,
+    activeSeriesUid
+  );
+
+  const onSaveGsps = async () => {
+    if (!activeSeries.study || !activeSeries.series) return;
+    if (gsps.count() === 0) {
+      showFlash("No measurements to save.");
+      return;
+    }
+    const res = await saveAnnotations(
+      activeSeries.study.studyUid,
+      activeSeries.series.seriesUid
+    );
+    if (res.ok) {
+      invalidateGspsCache(activeSeries.study.studyUid, activeSeries.series.seriesUid);
+      showFlash(`Saved ${res.count} measurement(s) to server.`);
+    } else {
+      showFlash(`Save failed: ${res.error ?? "store unavailable"}`);
+    }
+  };
+
+  const onLoadGsps = async () => {
+    if (!activeSeries.study || !activeSeries.series) return;
+    const list = await fetchSavedAnnotations(
+      activeSeries.study.studyUid,
+      activeSeries.series.seriesUid
+    );
+    if (list.length === 0) {
+      showFlash("No saved measurements for this series.");
+      return;
+    }
+    gsps.clearAll();
+    const restored = gsps.restore(list as never);
+    showFlash(`Restored ${restored} saved measurement(s).`);
+  };
+
+  const onDeleteGsps = async () => {
+    if (!activeSeries.study || !activeSeries.series) return;
+    const ok = await deleteSavedAnnotations(
+      activeSeries.study.studyUid,
+      activeSeries.series.seriesUid
+    );
+    if (ok) invalidateGspsCache(activeSeries.study.studyUid, activeSeries.series.seriesUid);
+    showFlash(ok ? "Server copy deleted." : "Delete failed.");
+  };
+
+  const onImportGsps = async (file: File) => {
+    try {
+      const restored = await importMeasurements(file);
+      showFlash(`Imported ${restored} measurement(s) from file.`);
+    } catch {
+      showFlash("Import failed: not a valid annotations JSON file.");
+    }
+  };
+
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-zinc-800 bg-zinc-950/95 px-2 py-1.5 backdrop-blur">
+    <div className="relative flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-zinc-800 bg-zinc-950/95 px-2 py-1.5 backdrop-blur">
       {/* tools */}
       <div className="flex items-center gap-0.5 overflow-x-auto [scrollbar-width:none]">
         {TOOLS.map((t) => (
@@ -327,6 +405,84 @@ export default function Toolbar() {
       <div className="hidden h-5 w-px bg-zinc-800 sm:block" />
 
       {/* misc actions */}
+      {/* measurement persistence + DICOM send (Phase 3) */}
+      <div className="flex items-center gap-0.5">
+        <button
+          disabled={!hasStudy}
+          title="Save measurements for this series to the server"
+          onClick={onSaveGsps}
+          className={cn(btn, "text-zinc-400 hover:bg-zinc-800 hover:text-teal-300")}
+        >
+          <span className="hidden sm:inline">⤒ Save</span>
+          <span className="sm:hidden">⤒</span>
+        </button>
+        <button
+          disabled={!hasStudy}
+          title="Load saved measurements for this series"
+          onClick={onLoadGsps}
+          className={cn(btn, "text-zinc-400 hover:bg-zinc-800 hover:text-teal-300")}
+        >
+          <span className="hidden sm:inline">⤓ Load</span>
+          <span className="sm:hidden">⤓</span>
+        </button>
+        <button
+          disabled={!hasStudy}
+          title="Export measurements as JSON (offline GSPS-style file)"
+          onClick={() => {
+            const st = activeSeries.study;
+            const sr = activeSeries.series;
+            if (st && sr) {
+              gsps.exportJson({
+                studyUid: st.studyUid,
+                seriesUid: sr.seriesUid,
+                patientName: st.patientName,
+              });
+            }
+          }}
+          className={cn(btn, "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200")}
+        >
+          <span className="hidden sm:inline">⇪ Export</span>
+          <span className="sm:hidden">⇪</span>
+        </button>
+        <button
+          disabled={!hasStudy}
+          title="Import measurements from JSON"
+          onClick={() => importInputRef.current?.click()}
+          className={cn(btn, "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200")}
+        >
+          <span className="hidden sm:inline">⇩ Import</span>
+          <span className="sm:hidden">⇩</span>
+        </button>
+        <button
+          disabled={!hasStudy}
+          title="Delete the server copy for this series"
+          onClick={onDeleteGsps}
+          className={cn(btn, "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200")}
+        >
+          ✕
+        </button>
+        <input
+          ref={importInputRef}
+          type="file"
+          accept=".json,application/json"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) onImportGsps(f);
+            e.target.value = "";
+          }}
+        />
+        <button
+          disabled={!hasStudy}
+          title="Send this study/series to a DICOM destination (C-STORE)"
+          onClick={() => setSendOpen(true)}
+          className={cn(btn, "bg-sky-600/80 text-white hover:bg-sky-500")}
+        >
+          <span className="hidden sm:inline">⇢ Send</span>
+          <span className="sm:hidden">⇢</span>
+        </button>
+      </div>
+
       <div className="flex items-center gap-0.5">
         <button
           title="Show / hide text overlays (o)"
@@ -379,6 +535,16 @@ export default function Toolbar() {
           ?
         </button>
       </div>
+
+      {toast && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-full mb-1 flex justify-center px-2">
+          <div className="rounded border border-teal-700/50 bg-zinc-900/95 px-3 py-1 text-[11px] text-teal-200 shadow-lg">
+            {toast}
+          </div>
+        </div>
+      )}
+
+      <SendDialog open={sendOpen} onOpenChange={setSendOpen} />
     </div>
   );
 }

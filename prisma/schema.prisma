@@ -48,3 +48,18 @@ model AutoPullEvent {
   @@index([sourceAet, createdAt])
   @@index([studyUid])
 }
+
+// Saved measurements (GSPS-style overlay state) for one series of one study.
+// payload = Cornerstone3D annotation.state JSON for the series, stored
+// verbatim so it can be restored losslessly (Phase 3).
+model AnnotationSet {
+  id        String   @id @default(cuid())
+  studyUid  String
+  seriesUid String
+  payload   String // JSON blob of annotation objects
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([studyUid, seriesUid])
+  @@index([studyUid])
+}

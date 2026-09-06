@@ -320,3 +320,55 @@ export async function studyInGateway(studyUid: string): Promise<boolean> {
   })) as unknown;
   return Array.isArray(ids) && ids.length > 0;
 }
+
+/* ------------------------------------------------------------------ */
+/* DICOM Send (C-STORE SCU) - Phase 3                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Look up the Orthanc resource id for a study/series that lives on the
+ * gateway, then ask the gateway to C-STORE push it to a configured
+ * destination modality. Returns the number of instances sent.
+ */
+export async function sendToModality(opts: {
+  targetAe: string;
+  studyUid: string;
+  seriesUid?: string | null;
+}): Promise<{ instancesSent: number; level: "study" | "series" }> {
+  const { targetAe, studyUid, seriesUid } = opts;
+  const level: "Study" | "Series" = seriesUid ? "Series" : "Study";
+  const uid = seriesUid || studyUid;
+
+  const ids = (await ocFetch("/tools/find", {
+    method: "POST",
+    body: JSON.stringify({
+      Level: level,
+      Expand: false,
+      Query:
+        level === "Study"
+          ? { StudyInstanceUID: uid }
+          : { SeriesInstanceUID: uid },
+    }),
+  })) as unknown;
+
+  if (!Array.isArray(ids) || ids.length === 0) {
+    throw new OrthancError(
+      "This study is not stored on the gateway - open it via PACS first (that caches it on the gateway), then send.",
+      404
+    );
+  }
+  const resourceId = String(ids[0]);
+
+  const result = (await ocFetch(
+    `/modalities/${encodeURIComponent(targetAe)}/store`,
+    {
+      method: "POST",
+      body: JSON.stringify(resourceId),
+    }
+  )) as { InstancesSent?: number };
+
+  return {
+    instancesSent: Number(result?.InstancesSent ?? 0),
+    level: level === "Series" ? ("series" as const) : ("study" as const),
+  };
+}

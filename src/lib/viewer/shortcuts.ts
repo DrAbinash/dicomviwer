@@ -144,6 +144,14 @@ export function buildShortcuts(): ShortcutDef[] {
       label: "Toggle annotations panel",
     },
     {
+      keys: "Alt+M",
+      action: () => {
+        const cur = s().layoutId;
+        s().setLayout(cur === "mpr" ? "1x1" : "mpr");
+      },
+      label: "Toggle tri-planar MPR (slab + MIP)",
+    },
+    {
       keys: "?",
       action: () => s().setHelpOpen(!s().helpOpen),
       label: "This help",

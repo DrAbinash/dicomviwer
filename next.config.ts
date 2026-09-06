@@ -34,8 +34,9 @@ const nextConfig: NextConfig = {
   turbopack: {
     // small NAS/CI containers OOM-kill the build without a cap (seen at ~2.3GB
     // anon-rss on a 4GB box); GC harder and stay under the ceiling
-    memoryLimit: 2048,
-  },
+    // (option is valid at runtime but missing from the published TS types)
+    ...({ memoryLimit: 2048 } as object),
+  } as NextConfig["turbopack"],
 };
 
 export default nextConfig;

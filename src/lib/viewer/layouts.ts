@@ -14,6 +14,9 @@ export interface LayoutDef {
 
 export const LAYOUTS: LayoutDef[] = [
   { id: "1x1", rows: 1, cols: 1, label: "1×1" },
+  // MPR is special-cased in <DicomViewer>: renders tri-planar volume viewports
+  // instead of stack tiles (Phase 3). rows/cols drive the grid only.
+  { id: "mpr", rows: 1, cols: 3, label: "MPR" },
   { id: "1x2", rows: 1, cols: 2, label: "1×2" },
   { id: "2x1", rows: 2, cols: 1, label: "2×1" },
   { id: "2x2", rows: 2, cols: 2, label: "2×2" },

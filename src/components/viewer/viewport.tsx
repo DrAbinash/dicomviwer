@@ -62,6 +62,7 @@ import {
   clearCellInvert,
 } from "@/lib/viewer/api";
 import { ensureCornerstone } from "@/lib/viewer/init";
+import { autoRestore, trackGspsViewportId } from "@/lib/viewer/gsps";
 
 const RENDERING_ENGINE_ID = "dicomviewer-engine";
 const TOOLGROUP_ID = "stack-tools";
@@ -324,6 +325,7 @@ export default function Viewport() {
       tg.addViewport(id, RENDERING_ENGINE_ID);
       const vp = engine.getViewport(id);
       if (vp) registerViewport(i, vp as Types.IStackViewport, el);
+      trackGspsViewportId(id, true);
       attachOverlayListeners(i, el);
       loadedSeriesRef.current.delete(i); // fresh viewport -> (re)load stack
     }
@@ -337,6 +339,7 @@ export default function Viewport() {
         (tg as unknown as { removeViewports: (...ids: string[]) => unknown }).removeViewports(vpId);
         engine.disableElement(vpId);
         registerViewport(cell, null);
+        trackGspsViewportId(vpId, false);
         listenersRef.current.get(cell)?.();
         listenersRef.current.delete(cell);
         loadedSeriesRef.current.delete(cell);
@@ -419,6 +422,11 @@ export default function Viewport() {
         }
         vp.render();
         updateOverlay(r.cell);
+        // GSPS-style auto-restore of saved measurements for this series
+        // (also covers annotations created in MPR - same FrameOfReference)
+        if (r.study) {
+          autoRestore(r.study.studyUid, r.series.seriesUid).catch(() => {});
+        }
       }
     }
 

@@ -70,6 +70,9 @@ interface ViewerState {
   showOverlays: boolean;
   smoothInterpolation: boolean;
 
+  // MPR (Phase 3): thick-slab thickness in mm while layoutId === "mpr"
+  mprSlab: number;
+
   // panels / dialogs
   annotationsOpen: boolean;
   helpOpen: boolean;
@@ -110,6 +113,9 @@ interface ViewerState {
   toggleAnnotations: () => void;
   setHelpOpen: (v: boolean) => void;
 
+  // MPR (Phase 3)
+  setMprSlab: (mm: number) => void;
+
   // preferences (server seeds + localStorage overrides)
   initViewerPrefs: () => Promise<void>;
   setPresets: (p: WindowPreset[]) => void;
@@ -137,6 +143,8 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
   inverted: false,
   showOverlays: FALLBACK_PREFS.defaults.showOverlays,
   smoothInterpolation: FALLBACK_PREFS.defaults.smoothInterpolation,
+
+  mprSlab: 1,
 
   annotationsOpen: false,
   helpOpen: false,
@@ -253,6 +261,8 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
 
   toggleAnnotations: () => set((s) => ({ annotationsOpen: !s.annotationsOpen })),
   setHelpOpen: (v) => set({ helpOpen: v }),
+
+  setMprSlab: (mm) => set({ mprSlab: Math.max(0.1, Math.round(mm * 10) / 10) }),
 
   /* --------------------------- preferences ------------------------------ */
 
