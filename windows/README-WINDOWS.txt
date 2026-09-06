@@ -1,5 +1,5 @@
 ================================================================
-  DICOM VIEWER v0.6.0 - WINDOWS DEPLOYMENT PACKAGE (OFFLINE)
+  DICOM VIEWER v0.7.0 - WINDOWS DEPLOYMENT PACKAGE (OFFLINE)
 ================================================================
 
 A self-hosted, RadiAnt-style web DICOM viewer with a built-in
@@ -10,6 +10,28 @@ This package is SELF-CONTAINED. It ships its own Node.js
 runtime and every npm dependency, including the Windows-native
 binaries (Prisma engine, sharp codecs). Nothing needs to be
 installed and no internet connection is required to run it.
+
+----------------------------------------------------------------
+0. TRIAL ACTIVATION (IMPORTANT - read this first)
+----------------------------------------------------------------
+This build ships WITHOUT a license key, so the first start shows
+the ACTIVATION screen instead of the viewer. Nothing works until
+a key is installed - that is by design (trial licensing).
+
+To activate, either:
+  a) paste the license key you received into the activation
+     screen, or
+  b) drop the license.key file into this folder (next to
+     START-VIEWER.bat).
+
+The key encodes an expiry date. After that date the viewer stops
+working (web UI, APIs, DICOM receiver) until you get a fresh key.
+Patient data is kept while locked. The clock must be set
+correctly: rolling it back locks the license.
+
+Self-testing? Generate a key with the vendor kit:
+  node license-keygen.mjs --name "Test" --days 7 --out license.key
+
 
 ----------------------------------------------------------------
 1. REQUIREMENTS

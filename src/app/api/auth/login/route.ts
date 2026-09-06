@@ -6,12 +6,22 @@ import {
   getAccount,
   verifyPassword,
 } from "@/lib/server/auth";
+import { getLicenseStatus } from "@/lib/server/license";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /** POST /api/auth/login { username, password } -> sets the session cookie. */
 export async function POST(req: NextRequest) {
+  // Trial gate: an unlicensed box must not hand out sessions either.
+  const license = getLicenseStatus();
+  if (license.state !== "valid") {
+    return NextResponse.json(
+      { error: "Viewer is not licensed - activate at the main page.", license },
+      { status: 403 }
+    );
+  }
+
   let body: Record<string, unknown>;
   try {
     body = (await req.json()) as Record<string, unknown>;

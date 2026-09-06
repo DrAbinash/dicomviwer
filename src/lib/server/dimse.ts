@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import dicomParser from "dicom-parser";
+import { getLicenseStatus } from "./license";
 import type {
   association,
   Client,
@@ -467,6 +468,16 @@ export async function startListener(): Promise<{ running: boolean; error: string
 
     cEchoRequest(request: CEchoRequest, callback: (response: CEchoResponse) => void): void {
       const resp = responses.CEchoResponse.fromRequest(request);
+      if (getLicenseStatus().state !== "valid") {
+        resp.setStatus(constants.Status.ProcessingFailure);
+        try {
+          resp.setErrorComment("Viewer license inactive - activate at the web UI");
+        } catch {
+          /* optional */
+        }
+        callback(resp);
+        return;
+      }
       resp.setStatus(constants.Status.Success);
       callback(resp);
     }
@@ -476,6 +487,17 @@ export async function startListener(): Promise<{ running: boolean; error: string
       callback: (responses: Array<CFindResponse>) => void
     ): Promise<void> {
       const out: CFindResponse[] = [];
+      if (getLicenseStatus().state !== "valid") {
+        const resp = responses.CFindResponse.fromRequest(request);
+        resp.setStatus(constants.Status.ProcessingFailure);
+        try {
+          resp.setErrorComment("Viewer license inactive - activate at the web UI");
+        } catch {
+          /* optional */
+        }
+        callback([resp]);
+        return;
+      }
       try {
         const ds = request.getDataset();
         if (!ds) throw new Error("C-FIND identifier dataset missing");
@@ -535,6 +557,16 @@ export async function startListener(): Promise<{ running: boolean; error: string
       callback: (response: CStoreResponseShape) => void
     ): Promise<void> {
       const resp = responses.CStoreResponse.fromRequest(request);
+      if (getLicenseStatus().state !== "valid") {
+        resp.setStatus(constants.Status.ProcessingFailure);
+        try {
+          resp.setErrorComment("Viewer license inactive - activate at the web UI");
+        } catch {
+          /* optional */
+        }
+        callback(resp);
+        return;
+      }
       try {
         const ds = request.getDataset();
         if (!ds) throw new Error("C-STORE dataset missing");

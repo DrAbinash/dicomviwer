@@ -19,9 +19,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"   # dicomviwer repo root
 WS="$(dirname "$ROOT")"                    # workspace root
-STAGE="$WS/win-staging/dicomviewer-windows-v0.6.0"
+VER="$(node -p "require('$ROOT/package.json').version")"
+STAGE="$WS/win-staging/dicomviewer-windows-v$VER"
 CACHE="$WS/.cache"
-ZIP="$WS/download/dicomviewer-v0.6.0-windows.zip"
+ZIP="$WS/download/dicomviewer-v$VER-windows.zip"
 
 log() { printf '\n=== %s ===\n' "$*"; }
 
@@ -105,7 +106,7 @@ log "7. create zip"
 mkdir -p "$WS/download"
 rm -f "$ZIP"
 cd "$WS/win-staging"
-zip -9 -rq "$ZIP" "dicomviewer-windows-v0.6.0"
+zip -9 -rq "$ZIP" "dicomviewer-windows-v$VER"
 
 # ---------------------------------------------------------------- 8. verify
 log "8. verify package"

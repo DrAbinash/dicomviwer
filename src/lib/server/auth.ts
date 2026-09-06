@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import type { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getSettings, setSetting } from "./config";
+import { getLicenseStatus } from "./license";
 
 /**
  * Phase 2 login - self-hosted session auth for the viewer.
@@ -161,8 +162,17 @@ export function cookieOptions(req?: NextRequest) {
 
 /* ------------------------------- guards -------------------------------- */
 
-/** 401 response when the caller has no valid session, null when allowed. */
+/** 401/403 response when unlicensed or no valid session, null when allowed. */
 export async function requireSession(req: NextRequest): Promise<NextResponse | null> {
+  // Trial gate first: an unlicensed box exposes NOTHING beyond activation.
+  const license = getLicenseStatus();
+  if (license.state !== "valid") {
+    const { NextResponse } = await import("next/server");
+    return NextResponse.json(
+      { error: "Viewer is not licensed - activate at the main page.", license },
+      { status: 403 }
+    );
+  }
   const user = await verifySessionToken(req.cookies.get(SESSION_COOKIE)?.value);
   if (!user) {
     const { NextResponse } = await import("next/server");

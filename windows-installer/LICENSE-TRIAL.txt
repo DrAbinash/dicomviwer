@@ -1,0 +1,23 @@
+DICOM VIEWER - SOFTWARE LICENSE NOTICE
+--------------------------------------
+
+This copy of DICOM Viewer is licensed for evaluation ("trial") use.
+
+A trial license is tied to a calendar date. When the date passes, the
+software stops working - the web interface, its APIs and the DICOM
+receiver all refuse service - until a fresh license key is issued by
+your supplier.
+
+  * To activate: start DICOM Viewer, then paste the license key you
+    received into the activation screen (one line, looks like
+    "eyJ...-signature").
+  * Alternatively, the supplier can place the key file directly at:
+      C:\ProgramData\DicomViewer\license.key
+  * Studies and settings are KEPT while the software is locked; a
+    fresh key resumes normal operation with no data loss.
+  * The system clock must be set correctly; rolling the clock back
+    locks the license until a fresh key is issued.
+
+Perpetual (paid) licenses use the same activation screen and never
+expire. By clicking "I Agree" you confirm that you will use this
+software in line with the agreement you have with your supplier.

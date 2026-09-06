@@ -267,13 +267,37 @@ Build the package yourself with:
 
 ```bash
 bun install && bunx prisma generate && bun run build
-bash scripts/make-windows-package.sh   # -> download/dicomviewer-v0.6.0-windows.zip
+bash scripts/make-windows-package.sh     # -> download/dicomviewer-v0.7.0-windows.zip
+bash scripts/make-windows-installer.sh   # -> download/DicomViewer-Setup-v0.7.0-signed.exe
 ```
 
 The packaging script embeds the Windows query engine
 (`binaryTargets = ["native", "windows"]` in `prisma/schema.prisma`), the
 sharp win32-x64 prebuilds, a portable `node.exe`, and a freshly pushed
 SQLite database, then verifies every critical file before zipping.
+
+## Windows Setup installer (signed) + trial licensing
+
+`scripts/make-windows-installer.sh` builds `DicomViewer-Setup-v0.7.0-signed.exe`
+(portable NSIS, code-signed with a timestamp): double-click, pick the folder,
+done - it installs to `C:\Program Files\DicomViewer`, keeps patient data in
+`C:\ProgramData\DicomViewer` (writable, survives upgrades), creates Start
+Menu/Desktop shortcuts, opens firewall ports 4310 (web) + 4104 (DICOM) and
+registers a proper uninstaller.
+
+Trials are enforced by the app itself (Ed25519-signed license keys):
+
+- No/expired key -> the whole application (UI, every API, the DICOM
+  receiver) is replaced by an **activation screen**; patient data is kept.
+- The vendor issues keys offline with the **license admin kit**
+  (`license-keygen.mjs --name "Clinic" --days 30` or `--until 2026-12-31`);
+  the customer pastes the key or drops `license.key` into
+  `C:\ProgramData\DicomViewer\`.
+- Fresh key == new trial period, and it also unlocks a box whose clock was
+  rolled back (anti-tamper sidecar `.licstate.json`).
+- `--perpetual` keys never expire (your own deployments).
+- The signing/signing key material never leaves the kit folder; it is
+  gitignored and must not be distributed.
 
 ## Security notes
 
@@ -298,6 +322,7 @@ SQLite database, then verifies every critical file before zipping.
 | 3 | MPR + thick-slab MIP, DICOM Send, measurement persistence (AnnotationSet/GSPS JSON) ✅ |
 | 3.5 | Built-in PACS node: DIMSE listener (C-STORE/C-ECHO/C-FIND SCP), direct C-FIND/C-GET/C-MOVE/C-STORE SCU, inbox ✅ |
 | 3.6 | Storage dashboard + automatic retention (delete by age / study count / disk space) ✅ |
+| 3.7 | Trial licensing (Ed25519 keys, activation gate, anti-tamper) + signed NSIS Windows installer ✅ |
 | 4 | Synology deployment drill, key images, DICOMDIR import/export, ROI histograms, hanging protocols |
 | 5 | Windows desktop (Tauri wrapper) |
 | 6 | iOS application (Capacitor, App Store) |

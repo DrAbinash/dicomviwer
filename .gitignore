@@ -55,3 +55,10 @@ server.log
 /skills/
 # runtime sqlite
 db/
+
+# vendor-only: license signing kit (private key!) - ships as offline zip, never in git
+license-admin/
+
+# dev/per-install license artifacts (vendor issues keys offline)
+/license.key
+/.licstate.json

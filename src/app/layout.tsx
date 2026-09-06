@@ -1,5 +1,9 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import LicenseGate from "@/components/license-gate";
+import { getLicenseStatus } from "@/lib/server/license";
+
+export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "DICOM Viewer",
@@ -27,14 +31,19 @@ export const viewport: Viewport = {
   themeColor: "#09090b",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // Trial/licensing gate: with no valid license the app is never rendered -
+  // only the activation screen (see src/lib/server/license.ts).
+  const license = getLicenseStatus();
   return (
     <html lang="en" className="dark">
-      <body className="antialiased">{children}</body>
+      <body className="antialiased">
+        {license.state === "valid" ? children : <LicenseGate status={license} />}
+      </body>
     </html>
   );
 }

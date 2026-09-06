@@ -10,12 +10,14 @@ import { NextRequest, NextResponse } from "next/server";
  *
  * Excluded from the gate:
  *  - /login, /api/auth/*        (the gate itself)
+ *  - /api/license               (trial activation screen - public by design)
  *  - /api/auto-pull/heartbeat   (machine route, secured by AUTO_PULL_TOKEN)
  *  - /_next, icons, manifest    (app shell assets)
  */
 const PUBLIC_PREFIXES = [
   "/login",
   "/api/auth/",
+  "/api/license",
   "/api/auto-pull/heartbeat",
   "/icons/",
   "/manifest.webmanifest",
