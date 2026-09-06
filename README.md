@@ -11,7 +11,7 @@ Windows (Tauri) and iOS (Capacitor) applications.
 > certified for diagnostic use. Always confirm findings on a certified
 > workstation.
 
-![Status](https://img.shields.io/badge/status-Phase%202.5-teal) ![Stack](https://img.shields.io/badge/stack-Next.js%2016%20%2B%20Cornerstone3D%205-black)
+![Status](https://img.shields.io/badge/status-v0.6.0-teal) ![Stack](https://img.shields.io/badge/stack-Next.js%2016%20%2B%20Cornerstone3D%205-black)
 
 ## Features
 
@@ -134,6 +134,27 @@ configured the same flows additionally mirror into its cache.
 - **Direct send** — the Send dialog offers every configured PACS as a
   "Direct" destination (payload from the inbox or the gateway cache).
 
+### Phase 3.6 — storage & automatic retention (housekeeping)
+
+Everything the viewer keeps (received studies, settings, measurements) lives
+in **one SQLite database** plus the inbox folder — and now manages itself:
+
+- **Storage dashboard** — **Settings → Storage** shows live numbers: studies,
+  series, instances, bytes on disk, SQLite database size, and free/total
+  space of the volume that holds the inbox.
+- **Auto-delete rules** — three independent limits, oldest studies removed
+  first: *older than N days*, *keep max N studies*, *keep inbox under N MB*.
+  Enforced by a background scheduler (checked every 10 minutes, lazily
+  started with the server; no cron needed) and persisted in the DB.
+- **Safe by default** — *Preview cleanup* runs a dry-run and lists exactly
+  which studies would be deleted and why (age / count / disk rule) before
+  anything is removed; *Clean up now* asks for confirmation. Disabling the
+  switch stops all automatic deletion.
+- **Auditability** — the result of the last automatic run (when, how many
+  studies, how much freed) is stored and shown in the dialog.
+- API: `GET/PUT /api/storage`, `POST /api/storage/cleanup` (`{"dryRun":true}`
+  for previews). Smoke test: `bun scripts/storage-smoke.ts` (26 assertions).
+
 ### Ideas taken from Horos (analysis)
 
 Horos (the open-source OsiriX fork) shaped several Phase 2 decisions:
@@ -238,8 +259,10 @@ network only.
 | 1 | MVP viewer ✅ |
 | 2 | Login, cine, layouts, PACS settings, auto-puller ✅ |
 | 2.5 | Horos feature pack: sync, presets editor, orientation markers, scrubber, shortcuts, measurements panel, PNG export ✅ |
-| 3 | Synology deployment dry-run + hardening, then DICOM send (C-STORE), measurement persistence (internal → GSPS), MPR + thick-slab MIP |
-| 4 | Key images, DICOMDIR import/export |
+| 3 | MPR + thick-slab MIP, DICOM Send, measurement persistence (AnnotationSet/GSPS JSON) ✅ |
+| 3.5 | Built-in PACS node: DIMSE listener (C-STORE/C-ECHO/C-FIND SCP), direct C-FIND/C-GET/C-MOVE/C-STORE SCU, inbox ✅ |
+| 3.6 | Storage dashboard + automatic retention (delete by age / study count / disk space) ✅ |
+| 4 | Synology deployment drill, key images, DICOMDIR import/export, ROI histograms, hanging protocols |
 | 5 | Windows desktop (Tauri wrapper) |
 | 6 | iOS application (Capacitor, App Store) |
 

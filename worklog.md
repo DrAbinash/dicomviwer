@@ -97,3 +97,33 @@ Stage Summary:
   2) DICOM send (C-STORE via Orthanc /modalities/{id}/store — quick win, UI "Send study to…")
   3) Measurement persistence (start internal JSON/DB persistence, then true GSPS export/import)
   4) MPR + thick-slab MIP (heaviest: volume loader, full series in memory, oblique tools)
+
+---
+Task ID: 5 (v0.6.0)
+Agent: main
+Task: Storage & automatic retention (Phase 3.6) — SQLite visibility + auto-delete
+  received studies by disk space / study count / age
+
+Work Log:
+- src/lib/server/storage-retention.ts: stats (studies/series/instances, inbox bytes
+  on disk via recursive scan, SQLite file size, disk free/total via fs.statfs with
+  graceful fallback), planCleanup (age/count/disk rules, oldest-first, multi-reason
+  victims), runCleanup (dryRun mode), AppSetting-persisted settings + lastRun record,
+  lazy scheduler (10-min interval, globalThis-guarded, unref'd timers).
+- API: GET/PUT /api/storage (stats+settings+scheduler), POST /api/storage/cleanup
+  {dryRun} — both requireSession-protected; scheduler hooked into /api/storage,
+  /api/dimse/received list.
+- UI: Settings gained a 6th tab "Storage" — 6 stat cards, auto-delete switch,
+  maxAgeDays/maxStudies/maxDiskMb inputs (0 = unlimited), preview cleanup list with
+  per-study reasons, confirm-guarded "Clean up now", last-auto-run line.
+- scripts/storage-smoke.ts: 26 assertions, ALL PASS (count/age/disk rules, dry-run
+  purity, file+row deletion, settings round-trip, lastRun persistence).
+- HTTP E2E on production standalone build: 401 unauth, login, GET stats, dry-run,
+  PUT settings, browser-verified Storage tab (screenshot) incl. save + preview flows.
+- Fixed env gotcha: bun auto-loads workspace .env (absolute DATABASE_URL); scripts
+  must not override it with a relative file: URL (resolves to a different sqlite file).
+
+Stage Summary:
+- v0.6.0: viewer storage is fully visible and self-managing; retention default OFF,
+  oldest-first deletion, dry-run preview. Roadmap updated (3/3.5/3.6 done, 4 next:
+  Synology drill, key images, DICOMDIR, ROI histograms, hanging protocols).

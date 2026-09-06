@@ -509,3 +509,82 @@ export async function getAutoPullStatus(): Promise<AutoPullStatus> {
   const res = await fetch("/api/auto-pull");
   return jsonOrError<AutoPullStatus>(res, "Failed to load auto-pull status");
 }
+
+// --------------------------------------------------------------------------
+// Storage & retention (Settings > Storage)
+// --------------------------------------------------------------------------
+
+export interface StorageStats {
+  studies: number;
+  series: number;
+  instances: number;
+  inboxBytes: number;
+  inboxBytesOnDisk: number | null;
+  dbBytes: number | null;
+  diskFreeBytes: number | null;
+  diskTotalBytes: number | null;
+  inboxDir: string;
+  oldestReceivedAt: string | null;
+  newestReceivedAt: string | null;
+}
+
+export interface RetentionSettings {
+  enabled: boolean;
+  maxAgeDays: number;
+  maxStudies: number;
+  maxDiskMb: number;
+}
+
+export interface RetentionVictim {
+  studyUid: string;
+  label: string;
+  bytes: number;
+  ageDays: number;
+  reasons: string[];
+}
+
+export interface CleanupResult {
+  dryRun: boolean;
+  deletedStudies: number;
+  freedBytes: number;
+  victims: RetentionVictim[];
+  remainingStudies: number;
+  remainingBytes: number;
+  triggeredBy: "manual" | "scheduler";
+  at: string;
+}
+
+export interface StorageInfo {
+  stats: StorageStats;
+  settings: RetentionSettings;
+  lastRun: { at: string; deletedStudies: number; freedBytes: number } | null;
+  scheduler: { active: boolean; nextRunAt: string | null; lastRunAt: string | null };
+}
+
+export async function getStorageInfo(): Promise<StorageInfo> {
+  const res = await fetch("/api/storage");
+  return jsonOrError<StorageInfo>(res, "Failed to load storage info");
+}
+
+export async function saveRetentionSettings(
+  settings: RetentionSettings
+): Promise<{ ok: boolean; settings: RetentionSettings }> {
+  const res = await fetch("/api/storage", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+  return jsonOrError<{ ok: boolean; settings: RetentionSettings }>(
+    res,
+    "Failed to save retention settings"
+  );
+}
+
+export async function runCleanupNow(dryRun: boolean): Promise<CleanupResult> {
+  const res = await fetch("/api/storage/cleanup", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dryRun }),
+  });
+  return jsonOrError<CleanupResult>(res, "Cleanup failed");
+}

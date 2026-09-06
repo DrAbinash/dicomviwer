@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { requireSession } from "@/lib/server/auth";
+import { ensureRetentionScheduler } from "@/lib/server/storage-retention";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -9,6 +10,7 @@ export const runtime = "nodejs";
 export async function GET(req: NextRequest) {
   const denied = await requireSession(req);
   if (denied) return denied;
+  ensureRetentionScheduler(); // lazy background cleanup start
   const studies = await db.receivedStudy.findMany({
     orderBy: { updatedAt: "desc" },
     take: 300,

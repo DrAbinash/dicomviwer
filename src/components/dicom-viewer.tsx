@@ -226,7 +226,7 @@ export default function DicomViewer() {
             DICOM<span className="text-zinc-200">Viewer</span>
           </span>
           <span className="hidden text-[10px] text-zinc-600 sm:inline">
-            v0.3 · Cornerstone3D
+            v0.6.0 · Cornerstone3D
           </span>
         </div>
 

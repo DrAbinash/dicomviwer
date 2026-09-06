@@ -12,7 +12,9 @@
  *  3. Auto-Pull — Phase 2 poller monitoring: last cycle summary and the
  *                 recent per-study activity written by the auto-puller
  *                 service via its heartbeat.
- *  4. Security  — change the viewer login (username / password).
+ *  4. Storage   — inbox/DB disk usage + automatic retention rules
+ *                 (delete received studies by age / study count / disk).
+ *  5. Security  — change the viewer login (username / password).
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -41,10 +43,15 @@ import {
   testServer,
   updateCredentials,
   updateServer,
+  runCleanupNow,
+  getStorageInfo,
+  saveRetentionSettings,
   type AutoPullStatus,
   type GatewayInfo,
   type ListenerStatus,
   type PacsServerInfo,
+  type StorageInfo,
+  type CleanupResult,
 } from "@/lib/viewer/pacs";
 import ViewerTab from "./viewer-tab";
 
@@ -65,6 +72,19 @@ const emptyForm = {
   port: "104",
   notes: "",
 };
+
+function formatBytes(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "—";
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v >= 100 ? v.toFixed(0) : v.toFixed(1)} ${units[i]}`;
+}
 
 export default function SettingsDialog({ open, onOpenChange }: Props) {
   const [gateway, setGateway] = useState<GatewayInfo | null>(null);
@@ -107,6 +127,16 @@ export default function SettingsDialog({ open, onOpenChange }: Props) {
   const [lisForward, setLisForward] = useState(true);
   const [lisBusy, setLisBusy] = useState(false);
   const [lisMsg, setLisMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // storage & retention
+  const [storage, setStorage] = useState<StorageInfo | null>(null);
+  const [stEnabled, setStEnabled] = useState(false);
+  const [stMaxAge, setStMaxAge] = useState("0");
+  const [stMaxStudies, setStMaxStudies] = useState("0");
+  const [stMaxDiskMb, setStMaxDiskMb] = useState("0");
+  const [stBusy, setStBusy] = useState(false);
+  const [stMsg, setStMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [stPlan, setStPlan] = useState<CleanupResult | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -158,6 +188,69 @@ export default function SettingsDialog({ open, onOpenChange }: Props) {
   useEffect(() => {
     if (open) refreshAutoPull();
   }, [open, refreshAutoPull]);
+
+  const refreshStorage = useCallback(async () => {
+    try {
+      const info = await getStorageInfo();
+      setStorage(info);
+      setStEnabled(info.settings.enabled);
+      setStMaxAge(String(info.settings.maxAgeDays));
+      setStMaxStudies(String(info.settings.maxStudies));
+      setStMaxDiskMb(String(info.settings.maxDiskMb));
+    } catch {
+      setStorage(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (open) refreshStorage();
+  }, [open, refreshStorage]);
+
+  async function saveRetention() {
+    setStBusy(true);
+    setStMsg(null);
+    try {
+      await saveRetentionSettings({
+        enabled: stEnabled,
+        maxAgeDays: Math.max(0, Math.floor(Number(stMaxAge) || 0)),
+        maxStudies: Math.max(0, Math.floor(Number(stMaxStudies) || 0)),
+        maxDiskMb: Math.max(0, Math.floor(Number(stMaxDiskMb) || 0)),
+      });
+      setStMsg({ ok: true, text: "Retention rules saved." });
+      await refreshStorage();
+    } catch (e) {
+      setStMsg({ ok: false, text: e instanceof Error ? e.message : "Save failed" });
+    } finally {
+      setStBusy(false);
+    }
+  }
+
+  async function cleanup(dryRun: boolean) {
+    setStBusy(true);
+    setStMsg(null);
+    try {
+      const r = await runCleanupNow(dryRun);
+      setStPlan(r);
+      setStMsg(
+        r.victims.length === 0
+          ? { ok: true, text: "Nothing to delete — inbox is within all limits." }
+          : dryRun
+            ? {
+                ok: true,
+                text: `Preview: ${r.victims.length} study(ies) would be deleted, freeing ${formatBytes(r.freedBytes)}. Use "Clean up now" to apply.`,
+              }
+            : {
+                ok: true,
+                text: `Deleted ${r.deletedStudies} study(ies), freed ${formatBytes(r.freedBytes)}.`,
+              }
+      );
+      await refreshStorage();
+    } catch (e) {
+      setStMsg({ ok: false, text: e instanceof Error ? e.message : "Cleanup failed" });
+    } finally {
+      setStBusy(false);
+    }
+  }
 
   async function saveSecurity() {
     setSecBusy(true);
@@ -318,6 +411,7 @@ export default function SettingsDialog({ open, onOpenChange }: Props) {
   const inputCls = "h-9 border-zinc-800 bg-zinc-900 text-sm text-zinc-200 placeholder:text-zinc-600";
   const btnPrimary =
     "h-9 bg-teal-600 text-white hover:bg-teal-500 disabled:opacity-50";
+  const fmtBytes = (n: number | null) => (n == null ? "—" : formatBytes(n));
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -331,7 +425,7 @@ export default function SettingsDialog({ open, onOpenChange }: Props) {
         </DialogHeader>
 
         <Tabs defaultValue="pacs" className="flex min-h-0 flex-1 flex-col gap-3">
-          <TabsList className="grid w-full grid-cols-5 bg-zinc-900">
+          <TabsList className="grid w-full grid-cols-6 bg-zinc-900">
             <TabsTrigger value="pacs" className="px-1 data-[state=active]:bg-zinc-800 data-[state=active]:text-teal-300">
               PACS
             </TabsTrigger>
@@ -343,6 +437,9 @@ export default function SettingsDialog({ open, onOpenChange }: Props) {
             </TabsTrigger>
             <TabsTrigger value="autopull" className="px-1 data-[state=active]:bg-zinc-800 data-[state=active]:text-teal-300">
               Auto-Pull
+            </TabsTrigger>
+            <TabsTrigger value="storage" className="px-1 data-[state=active]:bg-zinc-800 data-[state=active]:text-teal-300">
+              Storage
             </TabsTrigger>
             <TabsTrigger value="security" className="px-1 data-[state=active]:bg-zinc-800 data-[state=active]:text-teal-300">
               Security
@@ -866,6 +963,152 @@ export default function SettingsDialog({ open, onOpenChange }: Props) {
                 className="h-8 shrink-0 border-teal-700/60 px-2 text-xs text-teal-300 hover:bg-teal-900/30"
               >
                 Refresh
+              </Button>
+            </div>
+          </TabsContent>
+
+          {/* --------------------------- Storage --------------------------- */}
+          <TabsContent value="storage" className="flex min-h-0 flex-col gap-3 data-[state=inactive]:hidden">
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                { label: "Studies", value: storage ? String(storage.stats.studies) : "…" },
+                {
+                  label: "Instances",
+                  value: storage ? String(storage.stats.instances) : "…",
+                },
+                {
+                  label: "Inbox on disk",
+                  value: storage ? fmtBytes(storage.stats.inboxBytesOnDisk ?? storage.stats.inboxBytes) : "…",
+                },
+                {
+                  label: "SQLite database",
+                  value: storage ? fmtBytes(storage.stats.dbBytes) : "…",
+                },
+                {
+                  label: "Disk free",
+                  value: storage ? fmtBytes(storage.stats.diskFreeBytes) : "…",
+                },
+                {
+                  label: "Disk total",
+                  value: storage ? fmtBytes(storage.stats.diskTotalBytes) : "…",
+                },
+              ].map((c) => (
+                <div key={c.label} className="rounded border border-zinc-800 bg-zinc-900/70 p-2">
+                  <div className="text-[10px] uppercase tracking-wider text-zinc-500">{c.label}</div>
+                  <div className="mt-0.5 truncate text-sm font-semibold text-zinc-200">{c.value}</div>
+                </div>
+              ))}
+            </div>
+            <p className="text-[11px] leading-4 text-zinc-500">
+              The viewer stores everything locally in SQLite
+              (<span className="font-mono">{storage ? storage.stats.inboxDir.split("/").slice(0, -1).join("/") || "/" : "db/"}</span>
+              ) — received study files under the inbox folder, all settings and
+              indexes in the database. Retention rules below automatically
+              delete old received studies; oldest are always removed first.
+            </p>
+
+            <div className="rounded border border-teal-900/60 bg-zinc-900/70 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-xs font-semibold uppercase tracking-wider text-teal-300">
+                    Auto-delete received studies
+                  </div>
+                  <div className="text-[11px] text-zinc-500">
+                    Checked every 10 minutes in the background. 0 = keep forever.
+                  </div>
+                </div>
+                <Switch checked={stEnabled} onCheckedChange={setStEnabled} disabled={stBusy} />
+              </div>
+              <div className="mt-2.5 grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+                <div className="grid gap-1">
+                  <Label htmlFor="st-age" className="text-xs text-zinc-400">Older than (days)</Label>
+                  <Input
+                    id="st-age"
+                    inputMode="numeric"
+                    value={stMaxAge}
+                    onChange={(e) => setStMaxAge(e.target.value.replace(/[^0-9]/g, ""))}
+                    placeholder="0"
+                    className={inputCls}
+                  />
+                </div>
+                <div className="grid gap-1">
+                  <Label htmlFor="st-count" className="text-xs text-zinc-400">Keep max studies</Label>
+                  <Input
+                    id="st-count"
+                    inputMode="numeric"
+                    value={stMaxStudies}
+                    onChange={(e) => setStMaxStudies(e.target.value.replace(/[^0-9]/g, ""))}
+                    placeholder="0"
+                    className={inputCls}
+                  />
+                </div>
+                <div className="grid gap-1">
+                  <Label htmlFor="st-disk" className="text-xs text-zinc-400">Keep max disk (MB)</Label>
+                  <Input
+                    id="st-disk"
+                    inputMode="numeric"
+                    value={stMaxDiskMb}
+                    onChange={(e) => setStMaxDiskMb(e.target.value.replace(/[^0-9]/g, ""))}
+                    placeholder="0"
+                    className={inputCls}
+                  />
+                </div>
+              </div>
+              <div className="mt-2.5 flex items-center justify-between gap-2">
+                <div className="text-[11px] text-zinc-500">
+                  {storage?.lastRun
+                    ? `Last auto-run: deleted ${storage.lastRun.deletedStudies} study(ies), freed ${formatBytes(storage.lastRun.freedBytes)}`
+                    : "No automatic deletion has run yet."}
+                </div>
+                <Button onClick={saveRetention} disabled={stBusy} className={btnPrimary}>
+                  {stBusy ? "Saving…" : "Save rules"}
+                </Button>
+              </div>
+            </div>
+
+            {stPlan && stPlan.victims.length > 0 && (
+              <div className="max-h-36 overflow-y-auto rounded border border-zinc-800 bg-zinc-900/50 p-2">
+                {stPlan.victims.map((v) => (
+                  <div key={v.studyUid} className="flex items-center justify-between gap-2 py-0.5 text-[11px] text-zinc-400">
+                    <span className="min-w-0 truncate">
+                      {v.label} <span className="text-zinc-600">({v.reasons.join(", ")})</span>
+                    </span>
+                    <span className="shrink-0 font-mono text-zinc-500">{formatBytes(v.bytes)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {stMsg && (
+              <div
+                className={`rounded px-3 py-2 text-xs leading-4 ${
+                  stMsg.ok ? "bg-emerald-900/30 text-emerald-300" : "bg-rose-950/50 text-rose-300"
+                }`}
+              >
+                {stMsg.text}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => cleanup(true)}
+                disabled={stBusy}
+                className="h-9 border-zinc-800 bg-transparent text-zinc-300 hover:bg-zinc-900 hover:text-zinc-100"
+              >
+                Preview cleanup
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  if (confirm("Permanently delete every study matching the retention rules?")) {
+                    void cleanup(false);
+                  }
+                }}
+                disabled={stBusy || !stEnabled}
+                className="h-9 border-rose-900/60 bg-transparent text-rose-300 hover:bg-rose-950/40 hover:text-rose-200"
+              >
+                Clean up now
               </Button>
             </div>
           </TabsContent>
