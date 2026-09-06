@@ -29,14 +29,17 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  fetchReceivedStudyAsFiles,
   fetchStudyAsFiles,
   findOnRemote,
+  listReceived,
   listServers,
   pollRetrieveJob,
   queryStudies,
   startRetrieve,
   type PacsServerInfo,
   type PacsStudy,
+  type ReceivedStudyInfo,
   type RetrieveJobStatus,
 } from "@/lib/viewer/pacs";
 
@@ -49,6 +52,7 @@ interface Props {
 }
 
 const CACHE = "__cache__";
+const RECEIVED = "__received__";
 const POLL_MS = 1200;
 const POLL_MAX_MS = 10 * 60 * 1000; // give huge studies up to 10 minutes
 
@@ -67,10 +71,12 @@ export default function PacsDialog({
   const [modality, setModality] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  const [accession, setAccession] = useState("");
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<PacsStudy[] | null>(null);
+  const [received, setReceived] = useState<ReceivedStudyInfo[]>([]);
   const [pulling, setPulling] = useState<string | null>(null);
   const [pullPct, setPullPct] = useState(0);
   const [pullLabel, setPullLabel] = useState("");
@@ -83,6 +89,9 @@ export default function PacsDialog({
     listServers()
       .then(setServers)
       .catch(() => setServers([]));
+    listReceived()
+      .then(setReceived)
+      .catch(() => setReceived([]));
   }, [open]);
 
   useEffect(() => () => void (cancelled.current = true), []);
@@ -98,11 +107,35 @@ export default function PacsDialog({
         modality: modality || undefined,
         dateFrom: dateFrom || undefined,
         dateTo: dateTo || undefined,
+        accession: accession || undefined,
       };
-      const rows =
-        source === CACHE
-          ? await queryStudies({ ...filters, limit: 40 })
-          : await findOnRemote(source, filters);
+      let rows: PacsStudy[];
+      if (source === RECEIVED) {
+        const t = (v?: string) => (v ?? "").toLowerCase();
+        rows = received
+          .filter(
+            (r) =>
+              (!t(patientName) || r.patientName.toLowerCase().includes(t(patientName))) &&
+              (!t(patientId) || r.patientId.toLowerCase().includes(t(patientId))) &&
+              (!t(modality) || r.modalities.toUpperCase().includes(t(modality).toUpperCase()))
+          )
+          .map((r) => ({
+            studyUid: r.studyUid,
+            patientName: r.patientName,
+            patientId: r.patientId,
+            studyDate: r.studyDate
+              ? `${r.studyDate.slice(0, 4)}-${r.studyDate.slice(4, 6)}-${r.studyDate.slice(6, 8)}`
+              : "-",
+            studyDescription: `${r.studyDescription} · from ${r.sourceAet || "DICOM"}`,
+            accessionNumber: "-",
+            modalities: r.modalities,
+            seriesCount: String(r.seriesCount),
+          }));
+      } else if (source === CACHE) {
+        rows = await queryStudies({ ...filters, limit: 40 });
+      } else {
+        rows = await findOnRemote(source, filters);
+      }
       setResults(rows);
       if (rows.length === 0)
         setError(
@@ -115,7 +148,7 @@ export default function PacsDialog({
     } finally {
       setBusy(false);
     }
-  }, [patientName, patientId, modality, dateFrom, dateTo, source]);
+  }, [patientName, patientId, modality, dateFrom, dateTo, accession, source]);
 
   /** Poll the Orthanc retrieve job until it finishes (or the dialog closes). */
   const waitJob = useCallback(
@@ -151,6 +184,15 @@ export default function PacsDialog({
       setError(null);
       setPullPct(4);
       try {
+        if (source === RECEIVED) {
+          setPullLabel(`${study.patientName} · ${study.studyDescription}`);
+          const files = await fetchReceivedStudyAsFiles(study.studyUid, (done, total, label) =>
+            onProgress({ done, total, label })
+          );
+          onFiles(files);
+          onOpenChange(false);
+          return;
+        }
         if (source !== CACHE) {
           setPullLabel(`${study.patientName} · ${study.studyDescription}`);
           onProgress({
@@ -160,6 +202,20 @@ export default function PacsDialog({
           });
           const jobId = await startRetrieve(source, study.studyUid, "cget");
           await waitJob(jobId, study.patientName);
+          // The direct retrieve lands in this viewer's inbox — open from
+          // there first; fall back to the gateway cache for legacy flows.
+          try {
+            const files = await fetchReceivedStudyAsFiles(study.studyUid, (done, total, label) =>
+              onProgress({ done, total, label })
+            );
+            if (files.length > 0) {
+              onFiles(files);
+              onOpenChange(false);
+              return;
+            }
+          } catch {
+            /* fall through to gateway WADO */
+          }
         }
         // Study is (now) in the gateway — stream it into the viewer via WADO.
         const files = await fetchStudyAsFiles(study.studyUid, (done, total, label) =>
@@ -185,7 +241,8 @@ export default function PacsDialog({
     [source, waitJob, onFiles, onOpenChange, onProgress]
   );
 
-  const isRemote = source !== CACHE;
+  const isRemote = source !== CACHE && source !== RECEIVED;
+  const isInbox = source === RECEIVED;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -193,8 +250,8 @@ export default function PacsDialog({
         <DialogHeader>
           <DialogTitle className="text-teal-300">Query PACS</DialogTitle>
           <DialogDescription className="text-zinc-500">
-            Search the gateway cache or any configured PACS. Retrieved studies
-            are cached on the NAS and opened in the viewer.
+            Search this viewer's inbox, the gateway cache or any configured
+            PACS. Retrieved studies open directly in the viewer.
           </DialogDescription>
         </DialogHeader>
 
@@ -205,6 +262,7 @@ export default function PacsDialog({
               <SelectValue placeholder="Choose source" />
             </SelectTrigger>
             <SelectContent className="border-zinc-800 bg-zinc-950 text-zinc-200">
+              <SelectItem value={RECEIVED}>Inbox — received by this viewer (DICOM)</SelectItem>
               <SelectItem value={CACHE}>Gateway cache (already pulled)</SelectItem>
               {servers.map((s) => (
                 <SelectItem key={s.id} value={s.id}>
@@ -266,6 +324,15 @@ export default function PacsDialog({
                 />
               </div>
             </>
+          )}
+          {(isRemote || isInbox) && (
+            <Input
+              placeholder="Accession number"
+              value={accession}
+              onChange={(e) => setAccession(e.target.value)}
+              className="col-span-2 h-9 border-zinc-800 bg-zinc-900 text-sm sm:col-span-1"
+              onKeyDown={(e) => e.key === "Enter" && runQuery()}
+            />
           )}
           <Button
             onClick={runQuery}
@@ -335,7 +402,7 @@ export default function PacsDialog({
           </div>
         )}
 
-        {servers.length === 0 && (
+        {servers.length === 0 && source !== RECEIVED && (
           <p className="text-[11px] leading-4 text-zinc-600">
             No PACS servers configured yet — open{" "}
             <button

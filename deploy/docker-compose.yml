@@ -18,7 +18,9 @@
 #   cp .env.example .env  # edit values
 #   docker compose up -d --build
 #
-# The stack exposes ONLY Caddy (80/443). The viewer, Orthanc and the
+# The stack exposes Caddy (80/443) for browsers and the viewer's built-in
+# DICOM listener port (4104) for modalities/PACS that push studies directly
+# to the viewer (Settings -> PACS -> DICOM listener). Orthanc and the
 # auto-puller stay on the internal compose network; the browser reaches
 # Orthanc exclusively through the viewer's /api/pacs proxy.
 
@@ -44,6 +46,13 @@ services:
       AUTO_PULL_TOKEN: ${AUTO_PULL_TOKEN:-}
       NODE_ENV: production
       PORT: 3000
+    volumes:
+      # SQLite DB + built-in DICOM inbox (db/dicom-received) survive rebuilds
+      - viewer-data:/app/db
+    ports:
+      # Built-in DICOM listener (Settings -> PACS). Keep this mapping aligned
+      # with the port configured in the viewer Settings UI (default 4104).
+      - "${DVV_LISTEN_PORT:-4104}:${DVV_LISTEN_PORT:-4104}"
     depends_on:
       - orthanc
     restart: unless-stopped
@@ -124,6 +133,7 @@ configs:
     file: ./orthanc.json
 
 volumes:
+  viewer-data:
   orthanc-data:
   caddy-data:
   caddy-config:

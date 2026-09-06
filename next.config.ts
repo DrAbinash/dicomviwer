@@ -9,6 +9,9 @@ const nextConfig: NextConfig = {
     ignoreBuildErrors: true,
   },
   reactStrictMode: false,
+  // dcmjs-dimse is a Node-only DIMSE toolkit (uses node:net/crypto/stream);
+  // keep it out of the webpack server bundle and require() it at runtime.
+  serverExternalPackages: ["dcmjs-dimse", "dicom-parser"],
   transpilePackages: [
     "@cornerstonejs/core",
     "@cornerstonejs/tools",

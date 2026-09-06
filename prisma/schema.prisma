@@ -63,3 +63,54 @@ model AnnotationSet {
   @@unique([studyUid, seriesUid])
   @@index([studyUid])
 }
+
+// ---------------------------------------------------------------------------
+// Built-in PACS node (Phase 3.5) — studies received via the native DICOM
+// listener (C-STORE SCP). Files live on disk under db/dicom-received/
+// (<studyUid>/<sopUid>.dcm); these tables are the queryable index.
+// ---------------------------------------------------------------------------
+
+model ReceivedStudy {
+  id               String   @id @default(cuid())
+  studyUid         String   @unique
+  sourceAet        String   @default("") // calling AE Title of the sender
+  patientName      String   @default("")
+  patientId        String   @default("")
+  patientBirthDate String   @default("")
+  patientSex       String   @default("")
+  studyDate        String   @default("") // YYYYMMDD
+  studyDescription String   @default("")
+  accessionNumber  String   @default("")
+  modalities       String   @default("") // comma-joined ModalitiesInStudy
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([patientName])
+  @@index([studyDate])
+}
+
+model ReceivedSeries {
+  id            String   @id @default(cuid())
+  seriesUid     String   @unique
+  studyUid      String
+  seriesNumber  Int      @default(1)
+  description   String   @default("")
+  modality      String   @default("")
+  instanceCount Int      @default(0)
+  updatedAt     DateTime @updatedAt
+
+  @@index([studyUid])
+}
+
+model ReceivedInstance {
+  id             String   @id @default(cuid())
+  sopUid         String   @unique
+  studyUid       String
+  seriesUid      String
+  instanceNumber Int      @default(0)
+  filePath       String // absolute path of the stored .dcm file
+  bytes          Int      @default(0)
+  receivedAt     DateTime @default(now())
+
+  @@index([studyUid, seriesUid])
+}

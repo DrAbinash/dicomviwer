@@ -237,8 +237,13 @@ export async function deleteServer(id: string): Promise<void> {
   await jsonOrError<{ ok: boolean }>(res, "Failed to delete PACS server");
 }
 
+/** Direct C-ECHO verification against a configured server (no gateway). */
 export async function testServer(id: string): Promise<{ ok: boolean; ms?: number; error?: string }> {
-  const res = await fetch(`/api/pacs-servers/${id}/test`, { method: "POST" });
+  const res = await fetch("/api/dimse/echo", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ serverId: id }),
+  });
   return jsonOrError<{ ok: boolean; ms?: number; error?: string }>(res, "C-ECHO failed");
 }
 
@@ -267,11 +272,15 @@ export interface RemoteQueryFilters {
   dateFrom?: string;
   dateTo?: string;
   modality?: string;
+  accession?: string;
 }
 
-/** C-FIND study query against a user-added remote PACS (via the gateway SCU). */
+/**
+ * C-FIND study query against a user-added remote PACS — spoken directly by
+ * the server process (native DIMSE, no gateway required).
+ */
 export async function findOnRemote(serverId: string, filters: RemoteQueryFilters): Promise<PacsStudy[]> {
-  const res = await fetch("/api/dicom/find", {
+  const res = await fetch("/api/dimse/query", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ serverId, ...filters }),
@@ -285,14 +294,21 @@ export interface RetrieveJobStatus {
   progress: number;
   errorCode: number;
   errorDescription: string;
+  instancesDone?: number;
+  instancesTotal?: number;
 }
 
+/**
+ * Pull a study from a remote PACS straight into this viewer's inbox.
+ * method "cget" (default) needs no registration on the remote; "cmove"
+ * requires the built-in listener and a registered AE on the remote.
+ */
 export async function startRetrieve(
   serverId: string,
   studyUid: string,
   method: "cget" | "cmove" = "cget"
 ): Promise<string> {
-  const res = await fetch("/api/dicom/retrieve", {
+  const res = await fetch("/api/dimse/retrieve", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ serverId, studyUid, method }),
@@ -302,8 +318,140 @@ export async function startRetrieve(
 }
 
 export async function pollRetrieveJob(jobId: string): Promise<RetrieveJobStatus> {
-  const res = await fetch(`/api/dicom/jobs/${encodeURIComponent(jobId)}`);
+  const res = await fetch(`/api/dimse/jobs/${encodeURIComponent(jobId)}`);
   return jsonOrError<RetrieveJobStatus>(res, "Job polling failed");
+}
+
+/* ------------------------------------------------------------------ */
+/* Built-in DICOM listener (the viewer as a PACS node)                 */
+/* ------------------------------------------------------------------ */
+
+export interface ListenerStatus {
+  running: boolean;
+  config: {
+    enabled: boolean;
+    aeTitle: string;
+    port: number;
+    forwardToGateway: boolean;
+  };
+  stats: {
+    associations: number;
+    instances: number;
+    forwardFailures: number;
+    lastReceivedAt: string | null;
+    lastError: string | null;
+    startedAt: string | null;
+  };
+  error?: string;
+}
+
+export async function getListener(): Promise<ListenerStatus> {
+  const res = await fetch("/api/dimse/listener");
+  return jsonOrError<ListenerStatus>(res, "Failed to load listener status");
+}
+
+export async function saveListener(
+  config: Partial<ListenerStatus["config"]>
+): Promise<ListenerStatus> {
+  const res = await fetch("/api/dimse/listener", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(config),
+  });
+  return jsonOrError<ListenerStatus>(res, "Failed to save listener settings");
+}
+
+export interface ReceivedStudyInfo {
+  studyUid: string;
+  sourceAet: string;
+  patientName: string;
+  patientId: string;
+  studyDate: string;
+  studyDescription: string;
+  modalities: string;
+  seriesCount: number;
+  instanceCount: number;
+  receivedAt: string;
+}
+
+export async function listReceived(): Promise<ReceivedStudyInfo[]> {
+  const res = await fetch("/api/dimse/received");
+  const data = await jsonOrError<{ studies: ReceivedStudyInfo[] }>(res, "Failed to load inbox");
+  return data.studies;
+}
+
+export interface ReceivedStudyDetail {
+  study: ReceivedStudyInfo;
+  series: Array<{
+    seriesUid: string;
+    seriesNumber: number;
+    description: string;
+    modality: string;
+    instanceCount: number;
+  }>;
+  instances: Array<{ sopUid: string; seriesUid: string; instanceNumber: number; url: string }>;
+}
+
+export async function getReceivedStudy(studyUid: string): Promise<ReceivedStudyDetail> {
+  const res = await fetch(`/api/dimse/received/${encodeURIComponent(studyUid)}`);
+  return jsonOrError<ReceivedStudyDetail>(res, "Failed to load received study");
+}
+
+export async function deleteReceivedStudy(studyUid: string): Promise<void> {
+  const res = await fetch(`/api/dimse/received/${encodeURIComponent(studyUid)}`, {
+    method: "DELETE",
+  });
+  await jsonOrError<{ ok: boolean }>(res, "Failed to delete received study");
+}
+
+/** Stream every instance of a received study from the inbox as Files. */
+export async function fetchReceivedStudyAsFiles(
+  studyUid: string,
+  onProgress?: (done: number, total: number, label: string) => void
+): Promise<File[]> {
+  const detail = await getReceivedStudy(studyUid);
+  const files: File[] = [];
+  let done = 0;
+  for (const inst of detail.instances) {
+    const res = await fetch(inst.url);
+    if (!res.ok) throw new Error(`Instance fetch failed (${res.status})`);
+    const blob = await res.blob();
+    files.push(new File([blob], `${inst.sopUid}.dcm`, { type: "application/dicom" }));
+    done += 1;
+    const s = detail.series.find((x) => x.seriesUid === inst.seriesUid);
+    onProgress?.(done, detail.instances.length, `${s?.modality ?? ""} ${s?.description ?? ""}`.trim());
+  }
+  return files;
+}
+
+/* ------------------------------------------------------------------ */
+/* Direct DICOM send (C-STORE SCU from this process)                   */
+/* ------------------------------------------------------------------ */
+
+/** Send a held study/series (inbox or gateway cache) to a configured node. */
+export async function sendDirect(
+  serverId: string,
+  studyUid: string,
+  seriesUid?: string | null,
+  onProgress?: (pct: number) => void
+): Promise<{ ok: boolean; message: string; instancesSent?: number }> {
+  const res = await fetch("/api/dimse/send", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ serverId, studyUid, seriesUid }),
+  });
+  const start = await jsonOrError<{ jobId: string }>(res, "Send failed to start");
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 800));
+    const job = await pollRetrieveJob(start.jobId);
+    onProgress?.(job.progress);
+    if (job.state === "Success") {
+      const parts = [job.instancesDone != null ? `${job.instancesDone} instance(s) sent` : "Sent"];
+      if (job.errorDescription) parts.push(job.errorDescription);
+      return { ok: true, message: parts.join(" — "), instancesSent: job.instancesDone };
+    }
+    if (job.state === "Failure") throw new Error(job.errorDescription || "Send failed");
+  }
 }
 
 /* ------------------------------------------------------------------ */

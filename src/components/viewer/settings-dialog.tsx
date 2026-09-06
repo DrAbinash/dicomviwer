@@ -28,18 +28,22 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 import {
   createServer,
   deleteServer,
   getAutoPullStatus,
   getGatewayInfo,
+  getListener,
   listServers,
   saveGatewaySettings,
+  saveListener,
   testServer,
   updateCredentials,
   updateServer,
   type AutoPullStatus,
   type GatewayInfo,
+  type ListenerStatus,
   type PacsServerInfo,
 } from "@/lib/viewer/pacs";
 import ViewerTab from "./viewer-tab";
@@ -96,16 +100,30 @@ export default function SettingsDialog({ open, onOpenChange }: Props) {
   const [autoPull, setAutoPull] = useState<AutoPullStatus | null>(null);
   const [apLoading, setApLoading] = useState(false);
 
+  // built-in DICOM listener
+  const [listener, setListener] = useState<ListenerStatus | null>(null);
+  const [lisAe, setLisAe] = useState("");
+  const [lisPort, setLisPort] = useState("");
+  const [lisForward, setLisForward] = useState(true);
+  const [lisBusy, setLisBusy] = useState(false);
+  const [lisMsg, setLisMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
   const refresh = useCallback(async () => {
     setLoading(true);
     setPageError(null);
     try {
-      const [g, s] = await Promise.all([getGatewayInfo(), listServers()]);
+      const [g, s, l] = await Promise.all([getGatewayInfo(), listServers(), getListener().catch(() => null)]);
       setGateway(g);
       setServers(s);
       setGwUrl(g.url);
       setGwUser(g.username);
       setGwAet(g.gatewayAet);
+      if (l) {
+        setListener(l);
+        setLisAe(l.config.aeTitle);
+        setLisPort(String(l.config.port));
+        setLisForward(l.config.forwardToGateway);
+      }
     } catch (e) {
       setPageError(e instanceof Error ? e.message : "Failed to load settings");
     } finally {
@@ -184,6 +202,35 @@ export default function SettingsDialog({ open, onOpenChange }: Props) {
       setGwMsg({ ok: false, text: e instanceof Error ? e.message : "Save failed" });
     } finally {
       setGwBusy(false);
+    }
+  }
+
+  /** Toggle / save the built-in DICOM listener (C-STORE SCP). */
+  async function applyListener(patch: { enabled?: boolean; aeTitle?: string; port?: number; forwardToGateway?: boolean }) {
+    setLisBusy(true);
+    setLisMsg(null);
+    try {
+      const l = await saveListener({
+        aeTitle: patch.aeTitle ?? lisAe,
+        port: patch.port ?? (Number(lisPort) || undefined),
+        forwardToGateway: patch.forwardToGateway ?? lisForward,
+        ...patch,
+      });
+      setListener(l);
+      setLisAe(l.config.aeTitle);
+      setLisPort(String(l.config.port));
+      setLisForward(l.config.forwardToGateway);
+      if (l.error) setLisMsg({ ok: false, text: l.error });
+      else if (l.running)
+        setLisMsg({
+          ok: true,
+          text: `Listener active on port ${l.config.port} as "${l.config.aeTitle}" — point modalities at this host:port.`,
+        });
+      else setLisMsg({ ok: true, text: "Listener stopped." });
+    } catch (e) {
+      setLisMsg({ ok: false, text: e instanceof Error ? e.message : "Save failed" });
+    } finally {
+      setLisBusy(false);
     }
   }
 
@@ -310,6 +357,112 @@ export default function SettingsDialog({ open, onOpenChange }: Props) {
                 {pageError}
               </div>
             )}
+
+            {/* --------------------- built-in DICOM listener -------------------- */}
+            <div className="rounded border border-teal-900/60 bg-zinc-900/70 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span
+                    className={`h-2 w-2 shrink-0 rounded-full ${
+                      listener?.running ? "animate-pulse bg-emerald-400" : "bg-zinc-600"
+                    }`}
+                    title={listener?.running ? "listening" : "stopped"}
+                  />
+                  <div className="min-w-0">
+                    <div className="truncate text-xs font-semibold uppercase tracking-wider text-teal-300">
+                      DICOM listener — this viewer as a PACS node
+                    </div>
+                    <div className="truncate text-[11px] text-zinc-500">
+                      {listener?.running
+                        ? `Accepting C-STORE / C-ECHO / C-FIND on port ${listener.config.port}`
+                        : "Receive studies pushed by modalities or other PACS"}
+                    </div>
+                  </div>
+                </div>
+                <Switch
+                  checked={listener?.config.enabled ?? false}
+                  onCheckedChange={(v) => applyListener({ enabled: v })}
+                  disabled={lisBusy}
+                />
+              </div>
+
+              <div className="mt-2.5 grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+                <div className="grid gap-1">
+                  <Label htmlFor="lis-aet" className="text-xs text-zinc-400">Our AE Title</Label>
+                  <Input
+                    id="lis-aet"
+                    value={lisAe}
+                    onChange={(e) => setLisAe(e.target.value.toUpperCase())}
+                    placeholder="DICOMVIEWER"
+                    className={inputCls}
+                  />
+                </div>
+                <div className="grid gap-1">
+                  <Label htmlFor="lis-port" className="text-xs text-zinc-400">Listen port</Label>
+                  <Input
+                    id="lis-port"
+                    value={lisPort}
+                    onChange={(e) => setLisPort(e.target.value.replace(/[^0-9]/g, ""))}
+                    placeholder="4104"
+                    inputMode="numeric"
+                    className={inputCls}
+                  />
+                </div>
+                <div className="flex flex-col justify-end gap-1">
+                  <div className="flex items-center justify-between gap-2 rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5">
+                    <span className="text-[11px] text-zinc-400">Forward to gateway</span>
+                    <Switch
+                      checked={lisForward}
+                      onCheckedChange={(v) => setLisForward(v)}
+                      disabled={lisBusy}
+                    />
+                  </div>
+                  <Button
+                    size="sm"
+                    onClick={() =>
+                      applyListener({
+                        aeTitle: lisAe,
+                        port: Number(lisPort) || undefined,
+                        forwardToGateway: lisForward,
+                      })
+                    }
+                    disabled={lisBusy}
+                    className="h-8 bg-teal-600 text-xs text-white hover:bg-teal-500"
+                  >
+                    {lisBusy ? "Applying…" : "Save & apply"}
+                  </Button>
+                </div>
+              </div>
+
+              {listener?.running && (
+                <div className="mt-2 text-[11px] leading-4 text-zinc-500">
+                  {listener.stats.instances} instance(s) received since boot
+                  {listener.stats.lastReceivedAt
+                    ? ` · last ${new Date(listener.stats.lastReceivedAt).toLocaleTimeString()}`
+                    : ""}
+                  {listener.stats.forwardFailures > 0
+                    ? ` · ${listener.stats.forwardFailures} gateway forward failures`
+                    : ""}
+                </div>
+              )}
+              {lisMsg && (
+                <div
+                  className={`mt-2 rounded px-2 py-1 text-xs ${
+                    lisMsg.ok
+                      ? "bg-emerald-900/30 text-emerald-300"
+                      : "bg-rose-950/50 text-rose-300"
+                  }`}
+                >
+                  {lisMsg.text}
+                </div>
+              )}
+              <p className="mt-2 text-[11px] leading-4 text-zinc-600">
+                Received studies appear in the Query dialog under "Inbox". If a
+                gateway is configured they are also mirrored into its cache.
+                Remember to open the listen port in your firewall (and in the
+                Synology container port mapping when deployed).
+              </p>
+            </div>
 
             {servers.length === 0 && !loading && (
               <div className="rounded border border-zinc-800 bg-zinc-900/60 px-3 py-4 text-center text-xs leading-5 text-zinc-500">

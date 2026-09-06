@@ -98,6 +98,42 @@ hardcoded anywhere in the code.**
   `m` maximize, `y` sync, `o` overlays, `p` PNG, `a` measurements
 - **Text overlay toggle** (hide patient info for demos/screenshots)
 
+### Phase 3 — MPR, DICOM Send, measurement persistence
+
+- **Tri-planar MPR** (`Alt+M` or the layout grid): orthogonal Axial/Sagittal/
+  Coronal viewports driven by a Cornerstone3D volume, with a **thick-slab
+  slider** (0.1–50 mm) that doubles as **slab MIP** for angiographic reading
+- **DICOM Send**: push the current series or whole study to any configured
+  DICOM node — **direct C-STORE from the viewer process** (no gateway needed)
+  or the classic Orthanc-gateway route, with live progress
+- **Measurement persistence**: measurements are saved per series
+  (GSPS-style JSON of the full Cornerstone annotation state) and restored
+  automatically when the series is reopened; API at `/api/annotations`
+
+### Phase 3.5 — built-in PACS node (the viewer becomes a DICOM node)
+
+The server process speaks native DIMSE (via `dcmjs-dimse`) — most features
+below work with **zero external components**; when an Orthanc gateway is
+configured the same flows additionally mirror into its cache.
+
+- **DICOM listener (C-STORE SCP)** — enable it in **Settings → PACS → DICOM
+  listener** (AE Title + port, default `DICOMVIEWER:4104`, persisted in the
+  DB). Modalities and other PACS can then push studies straight into the
+  viewer: every received instance is stored under `db/dicom-received/`
+  (override with `DVV_RECEIVED_DIR`), indexed in SQLite, and optionally
+  forwarded into the Orthanc gateway. The listener auto-starts with the
+  server when enabled, answers **C-ECHO / C-FIND** (study-level query of the
+  inbox) and accepts every storage SOP class / transfer syntax.
+- **Inbox in the Query dialog** — studies received by the listener appear
+  under "Inbox — received by this viewer" and open with one click.
+- **Direct query/retrieve** — C-FIND + C-GET (or C-MOVE) pull from any
+  configured PACS straight into the inbox, with live progress and job
+  polling; C-GET needs no registration on the remote side.
+- **Direct C-ECHO test** — Settings → PACS “Test” now echoes straight from
+  the viewer (round-trip ms shown), no gateway required.
+- **Direct send** — the Send dialog offers every configured PACS as a
+  "Direct" destination (payload from the inbox or the gateway cache).
+
 ### Ideas taken from Horos (analysis)
 
 Horos (the open-source OsiriX fork) shaped several Phase 2 decisions:
@@ -116,9 +152,9 @@ Horos (the open-source OsiriX fork) shaped several Phase 2 decisions:
 | Export image | One-click PNG of the active tile |
 | Gap: Horos has no web/mobile UI, no PACS polling | We add login, PWA/mobile, and the auto-puller service |
 
-Still on the roadmap from the Horos study: 3D MPR + thick-slab MIP, ROI
-statistics histograms (mean/SD/min/max), key-image bookmarking, DICOMDIR
-import/export, and DICOM send (SCU) to downstream stations.
+Still on the roadmap from the Horos study: ROI statistics histograms
+(mean/SD/min/max), key-image bookmarking, DICOMDIR import/export, hanging
+protocols and print/Presentation-State (GSPS SOP class) export.
 
 ## Repository layout
 

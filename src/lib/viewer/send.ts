@@ -3,11 +3,18 @@
 /**
  * DICOM Send (C-STORE SCU) - Phase 3.
  *
- * The viewer never speaks DICOM-TCP; the Orthanc gateway that cached the
- * study acts as the C-STORE SCU: the server resolves the Orthanc resource id
- * for the selected study/series and asks the gateway to push it to a
- * configured destination modality (AE title). All requests are auth-gated.
+ * Two transports:
+ *  - Direct (Phase 3.5): the server process itself speaks C-STORE to the
+ *    destination (sendDirect below, /api/dimse/send) — no gateway needed;
+ *    payload comes from the local inbox or the gateway cache.
+ *  - Gateway: the Orthanc gateway that cached the study acts as the C-STORE
+ *    SCU (sendToModality, /api/dicom/send). Both are auth-gated.
+ *
+ * listServers/sendDirect live in ./pacs and are re-exported here for the
+ * send dialog's convenience.
  */
+
+export { listServers, sendDirect } from "./pacs";
 
 export interface SendDestination {
   name: string;
