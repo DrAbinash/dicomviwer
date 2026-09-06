@@ -239,6 +239,42 @@ network only.
   (default 5 min, lookback 1 day) and retrieves any study the gateway is
   missing. Watch it happen in **Settings → Auto-Pull**.
 
+## Run on Windows (offline package)
+
+A **self-contained Windows deployment zip** is available as a release asset
+(`dicomviewer-v0.6.0-windows.zip` on the v0.6.0 release) — no installer, no
+Node.js preinstalled, no internet needed at runtime.
+
+1. Extract the zip to a simple path such as `C:\DICOMViewer`.
+2. Double-click **START-VIEWER.bat** (allow SmartScreen once: *More info →
+   Run anyway*). The browser opens `http://localhost:3000`.
+3. Sign in with `admin` / `admin` and change the password in
+   **Settings → Security**.
+
+Inside the package:
+
+| Path | Purpose |
+|------|---------|
+| `app\` | Next.js standalone build + full `node_modules` (Windows Prisma engine, sharp win32 prebuilds, `dcmjs-dimse` closure) + pre-seeded SQLite DB |
+| `runtime\node.exe` | portable Node 22 LTS (win-x64) |
+| `START-VIEWER.bat` | start server (web :3000, DICOM :4104) + open browser |
+| `STOP-VIEWER.bat` | stop the server |
+| `OPEN-FIREWALL-PORTS.bat` | one-click LAN firewall rules (run as admin) |
+| `RESET-ADMIN.bat` | reset the login back to `admin` / `admin` |
+| `README-WINDOWS.txt` | full Windows handbook (ports, LAN access, auto-start, backup, troubleshooting) |
+
+Build the package yourself with:
+
+```bash
+bun install && bunx prisma generate && bun run build
+bash scripts/make-windows-package.sh   # -> download/dicomviewer-v0.6.0-windows.zip
+```
+
+The packaging script embeds the Windows query engine
+(`binaryTargets = ["native", "windows"]` in `prisma/schema.prisma`), the
+sharp win32-x64 prebuilds, a portable `node.exe`, and a freshly pushed
+SQLite database, then verifies every critical file before zipping.
+
 ## Security notes
 
 - **Change the default `admin`/`admin` login** (Settings → Security) after

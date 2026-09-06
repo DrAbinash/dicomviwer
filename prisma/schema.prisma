@@ -6,6 +6,10 @@
 
 generator client {
   provider = "prisma-client-js"
+  // "native" covers Linux (dev / Docker image); "windows" ships the Windows
+  // query engine so the standalone build also runs on Windows (offline
+  // deployment package, START-VIEWER.bat).
+  binaryTargets = ["native", "windows"]
 }
 
 datasource db {
